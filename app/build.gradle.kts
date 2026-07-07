@@ -3,6 +3,9 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+import java.util.Properties
+import java.io.FileInputStream
+
 android {
     namespace = "com.mpdplayer"
     compileSdk = 36
@@ -17,9 +20,8 @@ android {
 
     signingConfigs {
         create("release") {
-            val props = java.util.Properties().apply {
-                load(file("key.properties").inputStream())
-            }
+            val props = Properties()
+            props.load(FileInputStream(file("key.properties")))
             storeFile = file(props.getProperty("storeFile"))
             storePassword = props.getProperty("storePassword")
             keyAlias = props.getProperty("keyAlias")
