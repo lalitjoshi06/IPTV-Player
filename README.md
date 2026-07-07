@@ -16,14 +16,11 @@ Multi-playlist IPTV player for Android TV and phones with EPG, favorites, multi-
 - **Backup/restore** — Export/import all settings and playlists as JSON to Downloads folder
 - **Search** — Find channels by name with temporary search results category
 
-## Screenshots
-
-*(Add your own screenshots here)*
 
 ## Requirements
 
 - Android 7.0+ (API 24)
-- Android TV or phone/tablet
+- Design for Android TV Only (Working also for phone/tablet) 
 - Internet permission for streaming
 
 ## Setup
@@ -136,3 +133,4 @@ APK at `app/build/outputs/apk/debug/app-debug.apk`
 ## License
 
 MIT
+**If you want to use it just fork it and make it or use app directly from this repo.**
