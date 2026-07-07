@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="16dp"
+    android:focusable="true"
+    android:clickable="true"
+    android:background="@drawable/focused_highlight">
+
+    <CheckBox
+        android:id="@+id/cbPlaylistActive"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textColor="@android:color/white"
+        android:textSize="18sp"
+        android:textStyle="bold"
+        android:buttonTint="@color/colorAccent"
+        android:focusable="false"
+        android:clickable="false" />
+
+    <TextView
+        android:id="@+id/tvPlaylistUrl"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textColor="@color/text_secondary"
+        android:textSize="12sp"
+        android:layout_marginStart="32dp"
+        android:maxLines="1"
+        android:ellipsize="middle" />
+
+</LinearLayout>

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">TV-Player</string>
+    <string name="setup_title">TV-Player Setup</string>
+    <string name="main_title">TV-Player</string>
+</resources>
