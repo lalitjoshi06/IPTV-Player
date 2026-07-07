@@ -1,4 +1,4 @@
-# TV-Player (MPDPlayer)
+# TV-Player (IPTV-Player)
 
 Multi-playlist IPTV player for Android TV and phones with EPG, favorites, multi-source channels, and DASH/HLS support.
 
