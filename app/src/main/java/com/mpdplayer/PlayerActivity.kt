@@ -267,6 +267,7 @@ class PlayerActivity : AppCompatActivity() {
                 MediaItem.DrmConfiguration.Builder(C.WIDEVINE_UUID)
                     .setLicenseUri(licenseUrl)
                     .setMultiSession(true)
+                    .setForceDefaultLicenseUri(true)
                     .setPlayClearContentWithoutKey(true)
                     .build()
             )
