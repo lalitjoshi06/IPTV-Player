@@ -230,10 +230,10 @@ class PlayerActivity : AppCompatActivity() {
         // Ultra-Fast loading optimization: extremely low buffer requirements for instant startup
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
-                2000,  // min buffer (reduced to 2s)
-                10000, // max buffer (reduced to 10s)
-                250,   // buffer for playback (reduced to 250ms)
-                500    // buffer for rebuffering (reduced to 500ms)
+                10000,  // min buffer
+                30000,  // max buffer
+                250,    // buffer for playback
+                500     // buffer for rebuffering
             )
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()

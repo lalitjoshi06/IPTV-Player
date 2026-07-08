@@ -3,7 +3,11 @@ package com.mpdplayer
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.provider.MediaStore
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -25,11 +29,15 @@ class SetupActivity : AppCompatActivity() {
     private val playlists = mutableListOf<Playlist>()
     private val adapter = PlaylistAdapter()
 
+    private val importFilePickerLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) importFromUri(uri)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        
+
         loadPlaylistsFromPrefs()
-        
+
         if (playlists.isNotEmpty() && !intent.getBooleanExtra("force_setup", false)) {
             startMainActivity()
             return
@@ -43,6 +51,7 @@ class SetupActivity : AppCompatActivity() {
 
         findViewById<Button>(R.id.btnAddUrl).setOnClickListener { showUrlDialog() }
         findViewById<Button>(R.id.btnAddLocal).setOnClickListener { openFilePicker() }
+        findViewById<Button>(R.id.btnRestoreBackup).setOnClickListener { importBackup() }
         findViewById<Button>(R.id.btnContinue).setOnClickListener {
             if (playlists.isEmpty()) {
                 Toast.makeText(this, "Add at least one playlist", Toast.LENGTH_SHORT).show()
@@ -101,8 +110,8 @@ class SetupActivity : AppCompatActivity() {
             result.data?.data?.let { uri ->
                 try {
                     contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                } catch (e: Exception) {}
-                
+                } catch (_: Exception) {}
+
                 val builder = AlertDialog.Builder(this)
                 builder.setTitle("Playlist Name")
                 val input = EditText(this)
@@ -119,6 +128,98 @@ class SetupActivity : AppCompatActivity() {
         }
     }
 
+    private fun importBackup() {
+        var json: String? = null
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val resolver = contentResolver
+            val collectionUri = MediaStore.Downloads.EXTERNAL_CONTENT_URI
+            val projection = arrayOf(MediaStore.Downloads._ID)
+            val selection = "${MediaStore.Downloads.DISPLAY_NAME} = ?"
+            val selectionArgs = arrayOf("tv_player_backup.json")
+
+            val cursor = resolver.query(collectionUri, projection, selection, selectionArgs, null)
+            cursor?.use {
+                if (it.moveToFirst()) {
+                    val id = it.getLong(it.getColumnIndexOrThrow(MediaStore.Downloads._ID))
+                    val uri = android.content.ContentUris.withAppendedId(collectionUri, id)
+                    json = resolver.openInputStream(uri)?.bufferedReader()?.readText()
+                }
+            }
+        } else {
+            val downloadDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            val file = java.io.File(downloadDir, "tv_player_backup.json")
+            if (file.exists()) {
+                json = file.readText()
+            }
+        }
+
+        if (json != null) {
+            restoreFromJson(json)
+        } else {
+            AlertDialog.Builder(this)
+                .setTitle("Import Backup")
+                .setMessage("No backup file found in Downloads. Select the backup file manually?")
+                .setPositiveButton("Pick File") { _, _ ->
+                    importFilePickerLauncher.launch("application/json")
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+        }
+    }
+
+    private fun importFromUri(uri: Uri) {
+        try {
+            val json = contentResolver.openInputStream(uri)?.bufferedReader()?.readText()
+            if (json != null) {
+                restoreFromJson(json)
+            } else {
+                Toast.makeText(this, "Could not read file", Toast.LENGTH_SHORT).show()
+            }
+        } catch (e: Exception) {
+            Toast.makeText(this, "Import failed: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun restoreFromJson(json: String) {
+        try {
+            val type = object : TypeToken<Map<String, Any?>>() {}.type
+            val data: Map<String, Any?> = Gson().fromJson(json, type)
+
+            val prefs = getSharedPreferences("mpd_player_prefs", Context.MODE_PRIVATE).edit()
+            prefs.clear()
+
+            data.forEach { (key, value) ->
+                when (value) {
+                    is String -> prefs.putString(key, value)
+                    is Boolean -> prefs.putBoolean(key, value)
+                    is Number -> {
+                        val d = value.toDouble()
+                        if (d == d.toLong().toDouble()) prefs.putLong(key, d.toLong())
+                        else prefs.putFloat(key, d.toFloat())
+                    }
+                    is List<*> -> {
+                        val set = value.filterNotNull().map { it.toString() }.toSet()
+                        prefs.putStringSet(key, set)
+                    }
+                }
+            }
+            prefs.apply()
+
+            getSharedPreferences("mpd_player_prefs", Context.MODE_PRIVATE).edit()
+                .remove("cached_channels_json").apply()
+
+            Toast.makeText(this, "Backup restored! Restarting...", Toast.LENGTH_LONG).show()
+
+            // Reload playlists from restored prefs
+            loadPlaylistsFromPrefs()
+            adapter.notifyDataSetChanged()
+            findViewById<Button>(R.id.btnContinue).requestFocus()
+        } catch (e: Exception) {
+            Toast.makeText(this, "Import failed: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     private fun startMainActivity() {
         startActivity(Intent(this, MainActivity::class.java))
         finish()
@@ -132,7 +233,7 @@ class SetupActivity : AppCompatActivity() {
             val p = playlists[position]
             holder.text1.text = p.name
             holder.text2.text = p.url
-            
+
             holder.itemView.setOnFocusChangeListener { view, hasFocus ->
                 if (hasFocus) {
                     view.animate().scaleX(1.02f).scaleY(1.02f).setDuration(200).start()

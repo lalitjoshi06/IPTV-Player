@@ -45,11 +45,19 @@
     </LinearLayout>
 
     <Button
+        android:id="@+id/btnRestoreBackup"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Restore from Backup"
+        android:backgroundTint="#1565C0"
+        android:layout_marginTop="16dp"/>
+
+    <Button
         android:id="@+id/btnContinue"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:text="Continue"
-        android:layout_marginTop="16dp"
+        android:layout_marginTop="8dp"
         android:backgroundTint="@color/colorAccent"/>
 
     <TextView
