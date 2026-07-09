@@ -183,6 +183,7 @@ class CategoryActivity : AppCompatActivity() {
                 intent.putExtra("channelName", ch.name)
                 intent.putExtra("mpdUrl", ch.mpdUrl)
                 intent.putExtra("licenseUrl", ch.licenseUrl)
+                intent.putExtra("drmType", ch.drmType)
                 intent.putExtra("channelTvgId", ch.tvgId)
                 intent.putExtra("epgUrls", epgUrls)
                 intent.putExtra("currentIndex", position)

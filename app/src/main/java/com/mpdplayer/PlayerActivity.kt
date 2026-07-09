@@ -34,6 +34,8 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.google.gson.reflect.TypeToken
 import okhttp3.OkHttpClient
+import org.json.JSONArray
+import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.*
 import java.util.concurrent.TimeUnit
@@ -67,6 +69,7 @@ class PlayerActivity : AppCompatActivity() {
     private var currentChannel: Channel? = null
     private var currentMpdUrl: String = ""
     private var currentLicenseUrl: String = ""
+    private var currentDrmType: String = ""
     private var currentName: String = ""
     private var currentTvgId: String = ""
     
@@ -86,15 +89,58 @@ class PlayerActivity : AppCompatActivity() {
 
     @Volatile
     private var currentRequestHeaders: Map<String, String> = mapOf(
-        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0"
+        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
     )
 
     private val httpClient = OkHttpClient.Builder()
         .addInterceptor { chain ->
             val request = chain.request()
+            val url = request.url.toString()
             val builder = request.newBuilder()
-            currentRequestHeaders.forEach { (k, v) -> builder.header(k, v) }
-            chain.proceed(builder.build())
+            
+            // Apply current headers
+            currentRequestHeaders.forEach { (k, v) -> 
+                builder.header(k, v)
+            }
+            
+            // Critical: Ensure User-Agent is consistent and modern
+            if (!currentRequestHeaders.containsKey("User-Agent")) {
+                builder.header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36")
+            }
+            
+            // Force headers for Akamai/TataPlay segments and license workers
+            if (url.contains("akamaized.net") || url.contains("bpaicatchup") || url.contains("tataplay") || url.contains("workers.dev")) {
+                // Only set if not already present in currentRequestHeaders
+                if (!currentRequestHeaders.containsKey("Origin")) {
+                    builder.header("Origin", "https://watch.tataplay.com")
+                }
+                if (!currentRequestHeaders.containsKey("Referer")) {
+                    builder.header("Referer", "https://watch.tataplay.com/")
+                }
+            }
+            
+            // JioTV Heuristics
+            if (url.contains("jiotv") || url.contains("jio.com")) {
+                if (!currentRequestHeaders.containsKey("Origin")) builder.header("Origin", "https://www.jiotv.com")
+                if (!currentRequestHeaders.containsKey("Referer")) builder.header("Referer", "https://www.jiotv.com/")
+            }
+            
+            val finalRequest = builder.build()
+            val response = chain.proceed(finalRequest)
+            if (!response.isSuccessful) {
+                Log.e("PlayerActivity", "HTTP Error: ${response.code} for $url")
+                if (url.contains("127.0.0.1") || url.contains("localhost")) {
+                    Log.e("PlayerActivity", "WARNING: Request to localhost detected. This will fail on real devices unless a local proxy is running.")
+                }
+                val sb = StringBuilder("Headers sent: ")
+                finalRequest.headers.names().forEach { name ->
+                    if (!name.contains("Token", true) && !name.contains("Auth", true) && !name.contains("Cookie", true)) {
+                        sb.append("$name=${finalRequest.header(name)}, ")
+                    }
+                }
+                Log.e("PlayerActivity", sb.toString())
+            }
+            response
         }
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
@@ -112,7 +158,7 @@ class PlayerActivity : AppCompatActivity() {
         
         if (currentMpdUrl.isNotBlank()) {
             loadPreferredSource()
-            playChannel(currentMpdUrl, currentLicenseUrl)
+            playChannel(currentMpdUrl, currentLicenseUrl, currentDrmType)
         }
         
         loadAllEpgs()
@@ -154,6 +200,7 @@ class PlayerActivity : AppCompatActivity() {
         currentName = intent.getStringExtra("channelName") ?: ""
         currentMpdUrl = intent.getStringExtra("mpdUrl") ?: ""
         currentLicenseUrl = intent.getStringExtra("licenseUrl") ?: ""
+        currentDrmType = intent.getStringExtra("drmType") ?: ""
         currentTvgId = intent.getStringExtra("channelTvgId") ?: ""
         
         val json = intent.getStringExtra("channelsJson") ?: ""
@@ -203,6 +250,7 @@ class PlayerActivity : AppCompatActivity() {
                 currentSourceIndex = idx
                 currentMpdUrl = channel.sources[idx].url
                 currentLicenseUrl = channel.sources[idx].licenseUrl
+                currentDrmType = channel.sources[idx].drmType
             }
         }
     }
@@ -235,9 +283,10 @@ class PlayerActivity : AppCompatActivity() {
         mainHandler.post(runnable)
     }
 
-    private fun playChannel(mpdUrl: String, licenseUrl: String, startPos: Long = 0) {
+    private fun playChannel(mpdUrl: String, licenseUrl: String, drmType: String = currentDrmType, startPos: Long = 0) {
         currentMpdUrl = mpdUrl
         currentLicenseUrl = licenseUrl
+        currentDrmType = drmType
         
         player?.release()
         player = null
@@ -253,8 +302,120 @@ class PlayerActivity : AppCompatActivity() {
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()
 
+        // Apply per-stream headers
+        val sourceHeaders = currentChannel?.sources?.getOrNull(currentSourceIndex)?.headers
+        val headers = sourceHeaders?.toMutableMap() ?: mutableMapOf()
+        
+        // Use standard Chrome Windows User-Agent by default if not in playlist
+        if (!headers.containsKey("User-Agent")) {
+            headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+        }
+        
+        // Provider-specific Origin/Referer: only add when the stream URL actually
+        // belongs to that provider. Never force TataPlay headers onto unrelated
+        // streams (breaks other HLS providers). Playlist KODIPROP stream_headers
+        // already take precedence above.
+        val urlLc = mpdUrl.lowercase()
+        if (!headers.containsKey("Origin")) {
+            when {
+                urlLc.contains("tataplay") || urlLc.contains("tp.m3u8") ->
+                    headers["Origin"] = "https://watch.tataplay.com"
+                urlLc.contains("jio") || urlLc.contains("jiotv") ->
+                    headers["Origin"] = "https://www.jiotv.com"
+            }
+        }
+        if (!headers.containsKey("Referer")) {
+            when {
+                urlLc.contains("tataplay") || urlLc.contains("tp.m3u8") ->
+                    headers["Referer"] = "https://watch.tataplay.com/"
+                urlLc.contains("jio") || urlLc.contains("jiotv") ->
+                    headers["Referer"] = "https://www.jiotv.com/"
+            }
+        }
+
+        currentRequestHeaders = headers
+
+        val drmConfiguration = if (licenseUrl.isNotBlank()) {
+            val drmUuid = when (drmType) {
+                "playready" -> C.PLAYREADY_UUID
+                "clearkey" -> C.CLEARKEY_UUID
+                else -> C.WIDEVINE_UUID
+            }
+            val effectiveLicenseUri = resolveLicenseUri(drmType, licenseUrl)
+            MediaItem.DrmConfiguration.Builder(drmUuid)
+                .setLicenseUri(effectiveLicenseUri)
+                .setLicenseRequestHeaders(headers)
+                .setMultiSession(true)
+                .setForceDefaultLicenseUri(true)
+                .setPlayClearContentWithoutKey(true)
+                .build()
+        } else null
+
         player = ExoPlayer.Builder(this)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
+            .setMediaSourceFactory(
+                DefaultMediaSourceFactory(dataSourceFactory)
+                    .setDrmSessionManagerProvider {
+                        val drmConfig = drmConfiguration ?: return@setDrmSessionManagerProvider androidx.media3.exoplayer.drm.DrmSessionManager.DRM_UNSUPPORTED
+                        
+                        val callback = if (drmConfig.scheme == C.CLEARKEY_UUID) {
+                            object : androidx.media3.exoplayer.drm.MediaDrmCallback {
+                                val defaultCallback = androidx.media3.exoplayer.drm.HttpMediaDrmCallback(drmConfig.licenseUri.toString(), dataSourceFactory)
+                                
+                                override fun executeProvisionRequest(uuid: UUID, request: androidx.media3.exoplayer.drm.ExoMediaDrm.ProvisionRequest): androidx.media3.exoplayer.drm.MediaDrmCallback.Response {
+                                    return defaultCallback.executeProvisionRequest(uuid, request)
+                                }
+
+                                override fun executeKeyRequest(uuid: UUID, request: androidx.media3.exoplayer.drm.ExoMediaDrm.KeyRequest): androidx.media3.exoplayer.drm.MediaDrmCallback.Response {
+                                    headers.forEach { (k, v) -> defaultCallback.setKeyRequestProperty(k, v) }
+                                    val response = try {
+                                        defaultCallback.executeKeyRequest(uuid, request)
+                                    } catch (e: Exception) {
+                                        Log.e("PlayerActivity", "License request failed for ${drmConfig.licenseUri}", e)
+                                        throw e
+                                    }
+                                    val responseString = String(response.data).replace("\u0000", "").trim()
+                                    Log.d("PlayerActivity", "ClearKey Raw Response: $responseString")
+                                    
+                                    if (responseString.startsWith("{") || responseString.contains("\"keys\"")) {
+                                        Log.d("PlayerActivity", "ClearKey: Response is valid JSON, passing through")
+                                        val cleanJson = responseString.toByteArray(Charsets.UTF_8)
+                                        return androidx.media3.exoplayer.drm.MediaDrmCallback.Response(cleanJson)
+                                    }
+                                    
+                                    return try {
+                                        val delimiters = charArrayOf(':', ',', '|')
+                                        val parts = responseString.split(*delimiters).filter { it.isNotBlank() }
+                                        if (parts.size >= 2) {
+                                            val kid = parts[parts.size - 2].trim().replace("\"", "")
+                                            val k = parts[parts.size - 1].trim().replace("\"", "")
+                                            fun isHex(s: String) = s.matches(Regex("^[0-9a-fA-F]+$"))
+                                            val finalKid = if (isHex(kid)) hexToBase64Url(kid) else kid
+                                            val finalKey = if (isHex(k)) hexToBase64Url(k) else k
+                                            val json = "{\"keys\":[{\"kty\":\"oct\",\"k\":\"$finalKey\",\"kid\":\"$finalKid\"}],\"type\":\"temporary\"}"
+                                            Log.d("PlayerActivity", "ClearKey Transformed JSON: $json")
+                                            androidx.media3.exoplayer.drm.MediaDrmCallback.Response(json.toByteArray())
+                                        } else {
+                                            Log.e("PlayerActivity", "Could not parse ClearKey response: $responseString")
+                                            response
+                                        }
+                                    } catch (e: Exception) { 
+                                        Log.e("PlayerActivity", "Error transforming ClearKey response", e)
+                                        response 
+                                    }
+                                }
+                            }
+                        } else {
+                            val cb = androidx.media3.exoplayer.drm.HttpMediaDrmCallback(drmConfig.licenseUri.toString(), dataSourceFactory)
+                            headers.forEach { (k, v) -> cb.setKeyRequestProperty(k, v) }
+                            cb
+                        }
+                        
+                        androidx.media3.exoplayer.drm.DefaultDrmSessionManager.Builder()
+                            .setUuidAndExoMediaDrmProvider(drmConfig.scheme, androidx.media3.exoplayer.drm.FrameworkMediaDrm.DEFAULT_PROVIDER)
+                            .setMultiSession(true)
+                            .build(callback)
+                    }
+            )
             .setLoadControl(loadControl)
             .setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), true)
             .build()
@@ -262,30 +423,18 @@ class PlayerActivity : AppCompatActivity() {
         playerView.player = player
         
         val mediaItemBuilder = MediaItem.Builder()
-            .setUri(mpdUrl)
+            .setUri(currentMpdUrl)
             .setMediaMetadata(androidx.media3.common.MediaMetadata.Builder().setTitle(currentName).build())
 
-        // Apply per-stream headers from KODIPROP, fall back to generic User-Agent
-        val sourceHeaders = currentChannel?.sources?.getOrNull(currentSourceIndex)?.headers
-        currentRequestHeaders = if (sourceHeaders != null && sourceHeaders.isNotEmpty()) sourceHeaders else
-            mapOf("User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0")
-
-        val lowerUrl = mpdUrl.lowercase()
+        val lowerUrl = currentMpdUrl.lowercase()
         if (lowerUrl.contains(".m3u8") || lowerUrl.contains("m3u8") || lowerUrl.contains("hls")) {
             mediaItemBuilder.setMimeType(MimeTypes.APPLICATION_M3U8)
         } else if (lowerUrl.contains(".mpd") || lowerUrl.contains("dash") || licenseUrl.isNotBlank()) {
             mediaItemBuilder.setMimeType(MimeTypes.APPLICATION_MPD)
         }
 
-        if (licenseUrl.isNotBlank()) {
-            mediaItemBuilder.setDrmConfiguration(
-                MediaItem.DrmConfiguration.Builder(C.WIDEVINE_UUID)
-                    .setLicenseUri(licenseUrl)
-                    .setMultiSession(true)
-                    .setForceDefaultLicenseUri(true)
-                    .setPlayClearContentWithoutKey(true)
-                    .build()
-            )
+        if (drmConfiguration != null) {
+            mediaItemBuilder.setDrmConfiguration(drmConfiguration)
         }
 
         player?.setMediaItem(mediaItemBuilder.build())
@@ -311,7 +460,7 @@ class PlayerActivity : AppCompatActivity() {
                     errorRecoveryScheduled = true
                     mainHandler.postDelayed({
                         errorRecoveryScheduled = false
-                        playChannel(currentMpdUrl, currentLicenseUrl)
+                        playChannel(currentMpdUrl, currentLicenseUrl, currentDrmType)
                     }, 500)
                 } else if (channel != null && currentSourceIndex + 1 < channel.sources.size) {
                     errorRecoveryScheduled = true
@@ -319,13 +468,13 @@ class PlayerActivity : AppCompatActivity() {
                     val nextSource = channel.sources[currentSourceIndex]
                     mainHandler.post {
                         Toast.makeText(this@PlayerActivity, "Source failed. Switching...", Toast.LENGTH_SHORT).show()
-                        playChannel(nextSource.url, nextSource.licenseUrl)
+                        playChannel(nextSource.url, nextSource.licenseUrl, nextSource.drmType)
                         errorRecoveryScheduled = false
                     }
                 } else if (retryCount < maxRetries) {
                     retryCount++
                     val pos = player?.currentPosition ?: 0
-                    playChannel(currentMpdUrl, currentLicenseUrl, pos)
+                    playChannel(currentMpdUrl, currentLicenseUrl, currentDrmType, pos)
                 } else {
                     runOnUiThread { Toast.makeText(this@PlayerActivity, "Playback failed", Toast.LENGTH_LONG).show() }
                 }
@@ -336,6 +485,57 @@ class PlayerActivity : AppCompatActivity() {
         player?.prepare()
         player?.play()
         updateInfoBarUI()
+    }
+
+    /**
+     * Resolve the license URI for the given DRM system.
+     * For ClearKey, the KODIPROP license_key is typically the raw JSON key set
+     * or a KID:KEY hex pair, which Media3 expects wrapped in a data: URI.
+     */
+    private fun resolveLicenseUri(drmType: String, licenseUrl: String): String {
+        return if (drmType == "clearkey" && !licenseUrl.startsWith("data:") && !licenseUrl.startsWith("http")) {
+            buildClearKeyUri(licenseUrl)
+        } else {
+            licenseUrl
+        }
+    }
+
+    private fun buildClearKeyUri(licenseKey: String): String {
+        val json = if (licenseKey.trim().startsWith("{")) {
+            licenseKey
+        } else {
+            try {
+                val keysArray = JSONArray()
+                licenseKey.split(",").forEach { pair ->
+                    val parts = pair.split(":")
+                    if (parts.size == 2) {
+                        val keyObj = JSONObject()
+                        keyObj.put("kty", "oct")
+                        keyObj.put("kid", hexToBase64Url(parts[0].trim()))
+                        keyObj.put("k", hexToBase64Url(parts[1].trim()))
+                        keysArray.put(keyObj)
+                    }
+                }
+                val result = JSONObject()
+                result.put("keys", keysArray)
+                result.put("type", "temporary")
+                result.toString()
+            } catch (e: Exception) {
+                Log.e("PlayerActivity", "Failed to build ClearKey JSON", e)
+                licenseKey
+            }
+        }
+        val encoded = android.util.Base64.encodeToString(json.toByteArray(), android.util.Base64.NO_WRAP)
+        return "data:application/json;base64,$encoded"
+    }
+
+    private fun hexToBase64Url(hex: String): String {
+        val cleanHex = hex.replace(" ", "").replace("-", "")
+        val bytes = ByteArray(cleanHex.length / 2)
+        for (i in 0 until cleanHex.length step 2) {
+            bytes[i / 2] = cleanHex.substring(i, i + 2).toInt(16).toByte()
+        }
+        return android.util.Base64.encodeToString(bytes, android.util.Base64.URL_SAFE or android.util.Base64.NO_PADDING or android.util.Base64.NO_WRAP)
     }
 
     private fun showInfoBar() {
@@ -391,7 +591,7 @@ class PlayerActivity : AppCompatActivity() {
                 currentSourceIndex = which
                 val source = channel.sources[which]
                 savePreferredSource(source.url)
-                playChannel(source.url, source.licenseUrl)
+                playChannel(source.url, source.licenseUrl, source.drmType)
             }
             .show()
     }
@@ -522,10 +722,11 @@ class PlayerActivity : AppCompatActivity() {
         if (channel.sources.isNotEmpty()) {
             currentMpdUrl = channel.sources[0].url
             currentLicenseUrl = channel.sources[0].licenseUrl
+            currentDrmType = channel.sources[0].drmType
         }
         
         loadPreferredSource()
-        playChannel(currentMpdUrl, currentLicenseUrl)
+        playChannel(currentMpdUrl, currentLicenseUrl, currentDrmType)
     }
 
     private fun switchToLastChannel() {

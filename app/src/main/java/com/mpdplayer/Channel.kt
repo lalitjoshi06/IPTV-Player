@@ -4,7 +4,8 @@ data class StreamSource(
     val url: String,
     val licenseUrl: String = "",
     val playlistName: String = "",
-    val headers: Map<String, String> = emptyMap()
+    val headers: Map<String, String> = emptyMap(),
+    val drmType: String = ""
 )
 
 data class Channel(
@@ -19,6 +20,7 @@ data class Channel(
 ) {
     val mpdUrl: String get() = sources.firstOrNull()?.url ?: ""
     val licenseUrl: String get() = sources.firstOrNull()?.licenseUrl ?: ""
+    val drmType: String get() = sources.firstOrNull()?.drmType ?: ""
     
     fun getAllLookupIds(): List<String> {
         val ids = mutableSetOf<String>()

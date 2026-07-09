@@ -101,15 +101,17 @@ class MainActivity : AppCompatActivity() {
         urls.forEach { url ->
             EpgParser.loadEpg(this, url, { data ->
                 EpgManager.updateData(url, data)
-                if (pending.decrementAndGet() == 0) {
-                    mainHandler.post { channelAdapter.notifyDataSetChanged() }
-                }
+                onEpgPartLoaded(pending)
             }, {
-                if (pending.decrementAndGet() == 0) {
-                    mainHandler.post { channelAdapter.notifyDataSetChanged() }
-                }
+                onEpgPartLoaded(pending)
             })
         }
+    }
+
+    private fun onEpgPartLoaded(pending: java.util.concurrent.atomic.AtomicInteger) {
+        pending.decrementAndGet()
+        // Update the list as each EPG source finishes so programs appear progressively.
+        mainHandler.post { channelAdapter.notifyDataSetChanged() }
     }
 
     private fun loadFromCache() {
@@ -622,8 +624,12 @@ class MainActivity : AppCompatActivity() {
                 intent.putExtra("channelName", ch.name)
                 intent.putExtra("mpdUrl", ch.mpdUrl)
                 intent.putExtra("licenseUrl", ch.licenseUrl)
+                intent.putExtra("drmType", ch.drmType)
                 intent.putExtra("channelTvgId", ch.tvgId)
-                intent.putExtra("categoryName", categories[selectedCategoryIndex].name)
+                val categoryName = if (selectedCategoryIndex >= 0 && selectedCategoryIndex < categories.size) {
+                    categories[selectedCategoryIndex].name
+                } else ""
+                intent.putExtra("categoryName", categoryName)
                 intent.putExtra("channelsJson", gson.toJson(displayedChannels))
                 intent.putExtra("epgUrls", epgUrls.toTypedArray())
                 startActivity(intent)

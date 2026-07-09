@@ -2,6 +2,7 @@ package com.mpdplayer
 
 import java.io.InputStream
 import java.net.URL
+import java.util.concurrent.Executors
 import java.util.zip.GZIPInputStream
 import org.xmlpull.v1.XmlPullParser
 import org.xmlpull.v1.XmlPullParserFactory
@@ -10,6 +11,15 @@ import java.io.File
 import java.io.FileOutputStream
 
 object EpgParser {
+
+    // Single background thread: avoids CPU saturation (parallel XML parsing) on weak TV boxes.
+    private val executor = Executors.newSingleThreadExecutor()
+
+    // 6 hour cache window for both raw XML and parsed EPG.
+    private const val CACHE_TTL_MS = 6 * 3600 * 1000L
+
+    // Unit separator (0x1F) used as the field delimiter in the parsed cache.
+    private const val FS = '\u241f'
 
     private data class EpgChannelMap(
         val id: String,
@@ -23,43 +33,115 @@ object EpgParser {
         onError: (String) -> Unit
     ) {
         if (epgUrl.isBlank()) return
-        
-        Thread {
+
+        executor.execute {
             try {
-                val cacheFile = File(context.cacheDir, "epg_cache_${epgUrl.hashCode()}.xml")
+                val hash = epgUrl.hashCode()
+                val parsedCache = File(context.cacheDir, "epg_parsed_$hash.dat")
+                val xmlCache = File(context.cacheDir, "epg_cache_$hash.xml")
                 val now = System.currentTimeMillis()
-                
-                if (cacheFile.exists() && (now - cacheFile.lastModified()) < 6 * 3600 * 1000) {
-                    Log.d("EpgParser", "Loading from cache: $epgUrl")
-                    val epgMap = cacheFile.inputStream().use { parseXmltv(it) }
-                    if (epgMap.isNotEmpty()) {
-                        onComplete(epgMap)
-                        return@Thread
+
+                // 1. Fast path: load already-parsed EPG (skips XML parsing entirely).
+                if (parsedCache.exists() && (now - parsedCache.lastModified()) < CACHE_TTL_MS) {
+                    val cached = readParsedCache(parsedCache)
+                    if (cached != null && cached.isNotEmpty()) {
+                        Log.d("EpgParser", "Loaded parsed cache: $epgUrl")
+                        onComplete(cached)
+                        return@execute
                     }
                 }
 
-                Log.d("EpgParser", "Downloading EPG: $epgUrl")
-                val connection = URL(epgUrl).openConnection()
-                connection.setRequestProperty("User-Agent", "Mozilla/5.0")
-                connection.connectTimeout = 30000
-                connection.readTimeout = 60000
-
-                val inputStream = connection.getInputStream()
-                val decompressed = if (epgUrl.lowercase().contains(".gz")) GZIPInputStream(inputStream) else inputStream
-
-                // Memory efficient: Stream directly to file
-                FileOutputStream(cacheFile).use { out ->
-                    decompressed.copyTo(out)
+                // 2. Medium path: raw XML on disk is still fresh -> re-parse from disk (no download).
+                var epgMap: Map<String, EpgData>? = null
+                if (xmlCache.exists() && (now - xmlCache.lastModified()) < CACHE_TTL_MS) {
+                    try {
+                        epgMap = xmlCache.inputStream().use { parseXmltv(it) }
+                    } catch (e: Exception) {
+                        epgMap = null
+                    }
                 }
-                decompressed.close()
 
-                val epgMap = cacheFile.inputStream().use { parseXmltv(it) }
-                onComplete(epgMap)
+                // 3. Slow path: download (and GZIP if needed), cache raw XML, then parse.
+                if (epgMap == null || epgMap.isEmpty()) {
+                    Log.d("EpgParser", "Downloading EPG: $epgUrl")
+                    val connection = URL(epgUrl).openConnection()
+                    connection.setRequestProperty("User-Agent", "Mozilla/5.0")
+                    connection.connectTimeout = 30000
+                    connection.readTimeout = 60000
+
+                    val inputStream = connection.getInputStream()
+                    val decompressed = if (epgUrl.lowercase().contains(".gz")) GZIPInputStream(inputStream) else inputStream
+
+                    FileOutputStream(xmlCache).use { out ->
+                        decompressed.copyTo(out)
+                    }
+                    decompressed.close()
+
+                    epgMap = xmlCache.inputStream().use { parseXmltv(it) }
+                }
+
+                // Persist parsed result so next boot is instant.
+                if (epgMap.isNotEmpty()) {
+                    try { writeParsedCache(parsedCache, epgMap) } catch (e: Exception) { /* non-fatal */ }
+                    onComplete(epgMap)
+                } else {
+                    onError("Empty EPG")
+                }
             } catch (e: Exception) {
                 Log.e("EpgParser", "EPG Load Error: ${e.message}")
                 onError(e.message ?: "EPG failed")
             }
-        }.start()
+        }
+    }
+
+    /**
+     * Compact, fast-to-read serialization of the parsed EPG map.
+     * Field delimiter = 0x1F (unit separator); record delimiter = newline.
+     * Control characters inside text fields are replaced with spaces to stay safe.
+     */
+    private fun writeParsedCache(file: File, map: Map<String, EpgData>) {
+        file.bufferedWriter().use { w ->
+            w.write(map.size.toString()); w.append('\n')
+            for ((key, data) in map) {
+                val safeKey = key.replace(FS, ' ').replace('\n', ' ')
+                w.write(safeKey); w.append(FS); w.write(data.programs.size.toString()); w.append('\n')
+                for (p in data.programs) {
+                    w.write(p.start.toString()); w.append(FS)
+                    w.write(p.stop.toString()); w.append(FS)
+                    w.write(p.title.replace(FS, ' ').replace('\n', ' ')); w.append(FS)
+                    w.write(p.description.replace(FS, ' ').replace('\n', ' ')); w.append(FS)
+                    w.write(p.category.replace(FS, ' ').replace('\n', ' ')); w.append('\n')
+                }
+            }
+        }
+    }
+
+    private fun readParsedCache(file: File): Map<String, EpgData>? {
+        val result = mutableMapOf<String, EpgData>()
+        file.bufferedReader().useLines { seq ->
+            val iter = seq.iterator()
+            if (!iter.hasNext()) return null
+            val count = iter.next().toIntOrNull() ?: return null
+            repeat(count) {
+                if (!iter.hasNext()) return@repeat
+                val header = iter.next().split(FS)
+                if (header.size < 2) return@repeat
+                val key = header[0]
+                val progCount = header[1].toIntOrNull() ?: 0
+                val programs = mutableListOf<EpgProgram>()
+                repeat(progCount) {
+                    if (!iter.hasNext()) return@repeat
+                    val f = iter.next().split(FS)
+                    if (f.size >= 5) {
+                        val start = f[0].toLongOrNull() ?: 0L
+                        val stop = f[1].toLongOrNull() ?: 0L
+                        programs.add(EpgProgram(f[2], start, stop, f[3], f[4]))
+                    }
+                }
+                if (programs.isNotEmpty()) result[key] = EpgData(key, programs)
+            }
+        }
+        return if (result.isNotEmpty()) result else null
     }
 
     private fun parseXmltv(inputStream: InputStream): Map<String, EpgData> {

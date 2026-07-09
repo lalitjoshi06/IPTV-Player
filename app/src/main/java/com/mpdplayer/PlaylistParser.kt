@@ -10,6 +10,44 @@ import java.net.URL
 
 object PlaylistParser {
 
+    private fun mapDrmType(raw: String): String = when {
+        raw.contains("widevine", true) -> "widevine"
+        raw.contains("playready", true) -> "playready"
+        raw.contains("clearkey", true) || raw.contains("w3c", true) -> "clearkey"
+        else -> ""
+    }
+
+    /**
+     * Resolve the DRM system + license URL from KODIPROP values.
+     * Supports pipe-separated multi-system entries (license_type/license_key),
+     * preferring Widevine > PlayReady > ClearKey.
+     */
+    private fun resolveDrm(typeRaw: String, keyRaw: String): Pair<String, String> {
+        if (typeRaw.isBlank()) {
+            // If type is missing but key looks like ClearKey (KID:KEY), assume ClearKey
+            return if (keyRaw.contains(":") && !keyRaw.startsWith("http")) {
+                "clearkey" to keyRaw
+            } else {
+                "" to keyRaw
+            }
+        }
+
+        if (typeRaw.contains("|")) {
+            val types = typeRaw.split("|")
+            val keys = keyRaw.split("|")
+            val preferred = listOf("widevine", "playready", "clearkey")
+            for (pref in preferred) {
+                types.forEachIndexed { i, t ->
+                    if (mapDrmType(t) == pref && i < keys.size) {
+                        return mapDrmType(t) to keys[i].trim()
+                    }
+                }
+            }
+        }
+        return mapDrmType(typeRaw) to keyRaw
+    }
+
+
     data class PlaylistResult(
         val channels: List<Channel>,
         val epgUrls: List<String>
@@ -32,6 +70,7 @@ object PlaylistParser {
                 var currentGroup = ""
                 var currentTvgId = ""
                 var currentLicenseUrl = ""
+                var currentDrmTypeRaw = ""
                 val currentHeaders = mutableMapOf<String, String>()
                 val currentAltIds = mutableSetOf<String>()
                 val epgUrls = mutableListOf<String>()
@@ -68,6 +107,10 @@ object PlaylistParser {
                             currentLicenseUrl = l.substringAfter("=").trim()
                         }
 
+                        l.startsWith("#KODIPROP:") && l.contains("license_type") -> {
+                            currentDrmTypeRaw = l.substringAfter("=").trim()
+                        }
+
                         l.startsWith("#KODIPROP:") && l.contains("stream_headers") -> {
                             val raw = l.substringAfter("=").trim()
                             raw.split("|").forEach { pair ->
@@ -76,21 +119,47 @@ object PlaylistParser {
                             }
                         }
 
+                        l.startsWith("#EXTVLCOPT:", ignoreCase = true) -> {
+                            val opt = l.substringAfter(":").trim()
+                            if (opt.startsWith("http-user-agent=", ignoreCase = true)) {
+                                currentHeaders["User-Agent"] = opt.substringAfter("=").trim()
+                            } else if (opt.startsWith("http-referrer=", ignoreCase = true)) {
+                                currentHeaders["Referer"] = opt.substringAfter("=").trim()
+                            }
+                        }
+
                         !l.startsWith("#") && l.isNotBlank() -> {
-                            val streamUrl = l.trim()
+                            var streamUrl = l.trim()
+                            
+                            // Extract headers from URL if present (e.g., http://url|Header1=Val1&Header2=Val2)
+                            if (streamUrl.contains("|")) {
+                                val parts = streamUrl.split("|")
+                                streamUrl = parts[0].trim()
+                                if (parts.size > 1) {
+                                    parts[1].split("&").forEach { pair ->
+                                        val eq = pair.indexOf("=")
+                                        if (eq > 0) {
+                                            currentHeaders[pair.substring(0, eq).trim()] = pair.substring(eq + 1).trim()
+                                        }
+                                    }
+                                }
+                            }
+
                             if (currentName.isNotBlank() && streamUrl.isNotBlank()) {
+                                val (drmType, licenseUrl) = resolveDrm(currentDrmTypeRaw, currentLicenseUrl)
                                 val channel = Channel(
                                     name = currentName,
                                     logoUrl = currentLogo,
                                     group = currentGroup,
                                     tvgId = currentTvgId,
-                                    sources = mutableListOf(StreamSource(streamUrl, currentLicenseUrl, playlistName, currentHeaders.toMap()))
+                                    sources = mutableListOf(StreamSource(streamUrl, licenseUrl, playlistName, currentHeaders.toMap(), drmType))
                                 )
                                 channel.altIds.addAll(currentAltIds)
                                 channels.add(channel)
                             }
                             currentName = ""
                             currentLicenseUrl = ""
+                            currentDrmTypeRaw = ""
                             currentHeaders.clear()
                             currentAltIds.clear()
                         }

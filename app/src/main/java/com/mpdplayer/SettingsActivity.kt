@@ -56,7 +56,7 @@ class SettingsActivity : AppCompatActivity() {
                 .putBoolean("force_refresh", true)
                 .apply()
             val cacheDir = cacheDir
-            cacheDir.listFiles()?.filter { it.name.startsWith("epg_cache_") }?.forEach { it.delete() }
+            cacheDir.listFiles()?.filter { it.name.startsWith("epg_cache_") || it.name.startsWith("epg_parsed_") }?.forEach { it.delete() }
             Toast.makeText(this, "Refreshing all playlists...", Toast.LENGTH_SHORT).show()
             finish()
         }

@@ -147,6 +147,7 @@ class TvBrowseFragment : BrowseSupportFragment() {
                     putExtra("channelName", item.name)
                     putExtra("mpdUrl", item.mpdUrl)
                     putExtra("licenseUrl", item.licenseUrl)
+                    putExtra("drmType", item.drmType)
                     putExtra("channelTvgId", item.tvgId)
                     putExtra("epgUrls", epgUrls.toTypedArray())
                     putExtra("categoryName", if (isFavorite) "FAVORITES" else item.group)
