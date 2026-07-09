@@ -711,20 +711,25 @@ class PlayerActivity : AppCompatActivity() {
         currentChannel = channel
         currentName = channel.name
         currentTvgId = channel.tvgId
-        // NOTE: currentIndex is set by the caller (the position the user actually
-        // selected in the list) so the info-bar number always matches the selection.
-        
+
+        // Keep the side-list selection in sync with the channel that is really
+        // playing, so reopening the side list highlights the correct channel
+        // (e.g. after switching via LEFT / switch-to-last). Callers that already
+        // set currentIndex (next/prev, list click) are left unchanged here.
+        val idx = currentCategoryChannels.indexOfFirst { it.mpdUrl == channel.mpdUrl }
+        if (idx >= 0) currentIndex = idx
+
         // Update UI INSTANTLY so user sees what they are switching to
         updateInfoBarUI()
         showInfoBar()
-        
+
         currentSourceIndex = 0
         if (channel.sources.isNotEmpty()) {
             currentMpdUrl = channel.sources[0].url
             currentLicenseUrl = channel.sources[0].licenseUrl
             currentDrmType = channel.sources[0].drmType
         }
-        
+
         loadPreferredSource()
         playChannel(currentMpdUrl, currentLicenseUrl, currentDrmType)
     }
