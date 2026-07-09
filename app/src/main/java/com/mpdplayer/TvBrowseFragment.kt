@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.os.Handler
+import android.view.View
 import android.os.Looper
 import android.widget.Toast
 import androidx.core.content.ContextCompat
@@ -29,8 +30,8 @@ class TvBrowseFragment : BrowseSupportFragment() {
     private val epgUrls = mutableSetOf<String>()
     private var selectedChannel: Channel? = null
 
-    override fun onActivityCreated(savedInstanceState: Bundle?) {
-        super.onActivityCreated(savedInstanceState)
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
 
         title = "TV-Player"
         headersState = HEADERS_DISABLED
@@ -141,12 +142,14 @@ class TvBrowseFragment : BrowseSupportFragment() {
 
         setOnItemViewClickedListener { _, item, _, _ ->
             if (item is Channel) {
+                val isFavorite = getFavoritesPrefs().contains(Channel.favoriteKey(item))
                 startActivity(Intent(requireContext(), PlayerActivity::class.java).apply {
                     putExtra("channelName", item.name)
                     putExtra("mpdUrl", item.mpdUrl)
                     putExtra("licenseUrl", item.licenseUrl)
                     putExtra("channelTvgId", item.tvgId)
                     putExtra("epgUrls", epgUrls.toTypedArray())
+                    putExtra("categoryName", if (isFavorite) "FAVORITES" else item.group)
                     putExtra("channelsJson", Gson().toJson(allChannels))
                 })
             }

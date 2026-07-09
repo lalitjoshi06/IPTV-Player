@@ -58,11 +58,17 @@ class MainActivity : AppCompatActivity() {
     private val epgUrls = mutableSetOf<String>()
     
     private var selectedCategoryIndex = 0
+    // Remember the last selected category by name so returning from PlayerActivity
+    // (and Favorites being inserted at the top) keeps the right category selected.
+    private var lastSelectedCategoryName: String? = null
+    private val mainPrefs = getSharedPreferences("mpd_player_prefs", Context.MODE_PRIVATE)
     private val mainHandler = Handler(Looper.getMainLooper())
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+
+        lastSelectedCategoryName = mainPrefs.getString("last_category_name", null)
 
         rvCategories = findViewById(R.id.rvCategories)
         rvChannels = findViewById(R.id.rvChannels)
@@ -216,6 +222,11 @@ class MainActivity : AppCompatActivity() {
         } else {
             loadFromCache()
         }
+
+        // Keep focus locked in the channel list (not the category menu) when returning.
+        if (displayedChannels.isNotEmpty()) {
+            rvChannels.requestFocus()
+        }
     }
 
     private fun loadAllPlaylists(silent: Boolean = false) {
@@ -298,7 +309,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateCategories() {
-        val currentName = if (categories.isNotEmpty() && selectedCategoryIndex < categories.size) categories[selectedCategoryIndex].name else ""
+        val currentName = lastSelectedCategoryName
+            ?: if (categories.isNotEmpty() && selectedCategoryIndex < categories.size) categories[selectedCategoryIndex].name else ""
         categories.clear()
         val prefs = getSharedPreferences("mpd_player_prefs", Context.MODE_PRIVATE)
         val favJson = prefs.getString("favorites_list", "[]")
@@ -367,6 +379,8 @@ class MainActivity : AppCompatActivity() {
         selectedCategoryIndex = index
         val cat = categories[index]
         tvCategoryTitle.text = cat.name
+        lastSelectedCategoryName = cat.name
+        mainPrefs.edit().putString("last_category_name", cat.name).apply()
         displayedChannels.clear()
         displayedChannels.addAll(cat.channels)
         

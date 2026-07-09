@@ -77,6 +77,7 @@ class PlayerActivity : AppCompatActivity() {
     private var currentIndex: Int = -1
     private var currentSourceIndex: Int = 0
     private var lastPlayedChannel: Channel? = null
+    private var sideFocusedPosition: Int = 0
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private var retryCount = 0
@@ -160,8 +161,15 @@ class PlayerActivity : AppCompatActivity() {
             allChannels = MainActivity.gson.fromJson(json, object : TypeToken<List<Channel>>() {}.type)
             currentCategory = intent.getStringExtra("categoryName") ?: ""
             if (currentCategory.isNotEmpty()) filterChannelsByCategory(currentCategory) else currentCategoryChannels = allChannels
-            currentIndex = currentCategoryChannels.indexOfFirst { it.tvgId == currentTvgId || it.name == currentName }
-            if (currentIndex >= 0) currentChannel = currentCategoryChannels[currentIndex]
+            // Resolve the played channel by its actual URL first (robust against
+            // blank tvgId/name matches that would otherwise snap index to 0).
+            currentIndex = currentCategoryChannels.indexOfFirst { it.mpdUrl == currentMpdUrl }
+            if (currentIndex < 0) currentIndex = currentCategoryChannels.indexOfFirst { ch ->
+                (currentTvgId.isNotBlank() && ch.tvgId == currentTvgId) ||
+                (currentName.isNotBlank() && ch.name == currentName)
+            }
+            if (currentIndex < 0) currentIndex = 0
+            if (currentIndex in currentCategoryChannels.indices) currentChannel = currentCategoryChannels[currentIndex]
         }
         sideCategoryTitle.text = currentCategory
     }
@@ -173,8 +181,15 @@ class PlayerActivity : AppCompatActivity() {
             val json = prefs.getString("favorites_list", "[]")
             val favs: List<String> = MainActivity.gson.fromJson(json, object : TypeToken<List<String>>() {}.type)
             Channel.resolveFavorites(favs, allChannels)
+        } else if (category.equals("OTHERS", true) || category.equals("OTHER", true)) {
+            // Channels with a blank group are shown under the "OTHERS" pseudo-category.
+            val others = allChannels.filter { it.group.isBlank() }
+            if (others.isNotEmpty()) others else allChannels
         } else {
-            allChannels.filter { it.group.equals(category, true) }
+            val filtered = allChannels.filter { it.group.equals(category, true) }
+            // Fallback: if the group name doesn't match exactly (e.g. whitespace/case
+            // differences), keep the full list so the selected channel is still present.
+            if (filtered.isNotEmpty()) filtered else allChannels
         }
     }
 
@@ -496,6 +511,8 @@ class PlayerActivity : AppCompatActivity() {
         currentChannel = channel
         currentName = channel.name
         currentTvgId = channel.tvgId
+        // NOTE: currentIndex is set by the caller (the position the user actually
+        // selected in the list) so the info-bar number always matches the selection.
         
         // Update UI INSTANTLY so user sees what they are switching to
         updateInfoBarUI()
@@ -518,11 +535,21 @@ class PlayerActivity : AppCompatActivity() {
     private fun showSideChannelList() {
         sideChannelList.visibility = View.VISIBLE
         sideCategoryList.visibility = View.GONE
+        // Make sure focus goes to an item, never to the RecyclerView container itself.
+        rvSideChannels.isFocusable = false
         rvSideChannels.adapter = SideChannelAdapter()
-        mainHandler.postDelayed({
-            rvSideChannels.scrollToPosition(currentIndex)
-            mainHandler.postDelayed({ rvSideChannels.findViewHolderForAdapterPosition(currentIndex)?.itemView?.requestFocus() ?: rvSideChannels.requestFocus() }, 100)
-        }, 100)
+        rvSideChannels.post {
+            if (currentCategoryChannels.isEmpty()) return@post
+            val idx = currentIndex.coerceIn(0, currentCategoryChannels.size - 1)
+            sideFocusedPosition = idx
+            rvSideChannels.scrollToPosition(idx)
+            // Focus the actual item (retry once laid out). If it can't be focused,
+            // the first item receives focus because the container is not focusable.
+            rvSideChannels.post {
+                val vh = rvSideChannels.findViewHolderForAdapterPosition(idx)
+                if (vh != null) vh.itemView.requestFocus() else rvSideChannels.getChildAt(0)?.requestFocus()
+            }
+        }
     }
 
     private fun showSideCategoryList() {
@@ -567,7 +594,15 @@ class PlayerActivity : AppCompatActivity() {
                 showSideCategoryList()
                 return true 
             }
-            // Allow UP/DOWN/OK to reach the RecyclerView
+            if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) {
+                // Select the actually-focused item (robust against focus quirks).
+                val pos = sideFocusedPosition.coerceIn(0, currentCategoryChannels.size - 1)
+                switchChannel(currentCategoryChannels[pos])
+                sideChannelList.visibility = View.GONE
+                playerView.requestFocus()
+                return true
+            }
+            // Allow UP/DOWN to reach the RecyclerView for navigation
             return super.onKeyDown(keyCode, event)
         }
         
@@ -629,24 +664,28 @@ class PlayerActivity : AppCompatActivity() {
     private inner class SideChannelAdapter : RecyclerView.Adapter<SideChannelAdapter.VH>() {
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int) = VH(LayoutInflater.from(parent.context).inflate(R.layout.item_side_channel, parent, false))
         override fun onBindViewHolder(holder: VH, position: Int) {
-            val currentPos = holder.bindingAdapterPosition
-            if (currentPos == RecyclerView.NO_POSITION) return
-            val ch = currentCategoryChannels[currentPos]
-            
+            if (position == RecyclerView.NO_POSITION) return
+            val ch = currentCategoryChannels[position]
+
             holder.tvName.text = ch.name
             holder.tvCount.visibility = View.GONE
-            holder.tvName.setTextColor(if (currentPos == currentIndex) 0xFF4CAF50.toInt() else 0xFFFFFFFF.toInt())
-            
-            holder.itemView.setOnFocusChangeListener { view, hasFocus -> 
-                if (hasFocus) view.animate().scaleX(1.05f).scaleY(1.05f).setDuration(150).start() 
-                else view.animate().scaleX(1.0f).scaleY(1.0f).setDuration(150).start() 
+            holder.tvName.setTextColor(if (position == currentIndex) 0xFF4CAF50.toInt() else 0xFFFFFFFF.toInt())
+
+            holder.itemView.setOnFocusChangeListener {
+                view, hasFocus ->
+                if (hasFocus) {
+                    sideFocusedPosition = position
+                    view.animate().scaleX(1.05f).scaleY(1.05f).setDuration(150).start()
+                } else {
+                    view.animate().scaleX(1.0f).scaleY(1.0f).setDuration(150).start()
+                }
             }
-            
-            holder.itemView.setOnClickListener { 
-                currentIndex = currentPos
+
+            holder.itemView.setOnClickListener {
+                currentIndex = position
                 switchChannel(ch)
                 sideChannelList.visibility = View.GONE
-                playerView.requestFocus() 
+                playerView.requestFocus()
             }
         }
         override fun getItemCount() = currentCategoryChannels.size
