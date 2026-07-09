@@ -103,32 +103,6 @@ export JAVA_HOME=/path/to/jdk17
 
 APK at `app/build/outputs/apk/debug/app-debug.apk`
 
-### Dependencies
-
-| Library | Version |
-|---|---|
-| Media3 (ExoPlayer) | 1.10.1 |
-| Leanback | 1.2.0 |
-| Core KTX | 1.15.0 |
-| AppCompat | 1.7.1 |
-| RecyclerView | 1.4.0 |
-| Glide | 5.0.7 |
-| OkHttp | 4.12.0 |
-| Gson | 2.11.0 |
-
-## Architecture
-
-| File | Purpose |
-|---|---|
-| `SetupActivity.kt` | First-launch playlist setup (URL or file picker) |
-| `MainActivity.kt` | Main category/channel browser with EPG loading |
-| `PlayerActivity.kt` | ExoPlayer with side panels, info bar, source switching |
-| `CategoryActivity.kt` | Full-screen category view with inline favorites |
-| `SettingsActivity.kt` | Playlist management, EPG toggle, refresh, backup |
-| `PlaylistParser.kt` | M3U parser (EXTINF, KODIPROP, stream_headers) |
-| `EpgParser.kt` | XMLTV EPG parser |
-| `EpgManager.kt` | EPG data storage with playlist-scoped lookup |
-| `Channel.kt` | Channel/StreamSource data models with favorite key helpers |
 
 ## License
 
