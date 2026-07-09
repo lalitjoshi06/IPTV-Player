@@ -61,7 +61,7 @@ class MainActivity : AppCompatActivity() {
     // Remember the last selected category by name so returning from PlayerActivity
     // (and Favorites being inserted at the top) keeps the right category selected.
     private var lastSelectedCategoryName: String? = null
-    private val mainPrefs = getSharedPreferences("mpd_player_prefs", Context.MODE_PRIVATE)
+    private val mainPrefs by lazy { getSharedPreferences("mpd_player_prefs", Context.MODE_PRIVATE) }
     private val mainHandler = Handler(Looper.getMainLooper())
 
     override fun onCreate(savedInstanceState: Bundle?) {
