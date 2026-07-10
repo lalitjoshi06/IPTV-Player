@@ -287,7 +287,7 @@ class MainActivity : AppCompatActivity() {
 
         val activePlaylists = playlists.filter { it.isActive }
         val activeNames = activePlaylists.map { it.name }.toSet()
-        
+
         if (activePlaylists.isEmpty()) {
             allChannels.clear()
             updateCategories()
@@ -295,40 +295,52 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (!silent) loadingBar.visibility = View.VISIBLE
-        
+
         val tempChannels = mutableListOf<Channel>()
         val tempEpgUrls = mutableSetOf<String>()
+        val successNames = mutableSetOf<String>()
+        // Snapshot of the currently-loaded (cache-based) channels, so we can fall
+        // back to them for any playlist that fails to (re)load this launch.
+        val cacheChannels = synchronized(allChannels) { allChannels.toList() }
         val counter = AtomicInteger(activePlaylists.size)
-        
+
+        val finalize: () -> Unit = {
+            val successful = synchronized(successNames) { successNames.toSet() }
+            // Cached channels belonging to playlists that did NOT load this launch.
+            // Merging them back in (deduped by tvgId/name, sources combined) keeps
+            // the channel list — and therefore the favorites count — stable even
+            // when a playlist is temporarily unreachable, instead of dropping it.
+            val failedCache = cacheChannels.filter { ch -> ch.sources.none { it.playlistName in successful } }
+            val failedPlaylists = activeNames - successful
+            mainHandler.post {
+                allChannels.clear()
+                allChannels.addAll(tempChannels)
+                mergeIntoList(allChannels, failedCache)
+                epgUrls.clear()
+                epgUrls.addAll(tempEpgUrls)
+                // Keep EPG URLs for the playlists that failed to load this launch.
+                failedPlaylists.forEach { name -> EpgManager.getPlaylistEpgMap()[name]?.let { epgUrls.addAll(it) } }
+                loadingBar.visibility = View.GONE
+                updateCategories()
+                saveToCache()
+                if (refreshEpg) refreshEpg()
+            }
+        }
+
         activePlaylists.forEach { playlist ->
             PlaylistParser.parse(this, playlist.url, playlist.name, { result ->
                 synchronized(tempChannels) {
                     mergeIntoList(tempChannels, result.channels)
+                    successNames.add(playlist.name)
                     if (playlist.useEpg) {
                         tempEpgUrls.addAll(result.epgUrls)
                         EpgManager.associatePlaylistWithEpg(playlist.name, result.epgUrls)
                     }
                 }
-                
-                if (counter.decrementAndGet() == 0) {
-                    mainHandler.post {
-                        loadingBar.visibility = View.GONE
-                        allChannels.clear()
-                        allChannels.addAll(tempChannels)
-                        epgUrls.clear()
-                        epgUrls.addAll(tempEpgUrls)
-                        updateCategories()
-                        saveToCache()
-                        if (refreshEpg) refreshEpg()
-                    }
-                }
+
+                if (counter.decrementAndGet() == 0) finalize()
             }, { err ->
-                if (counter.decrementAndGet() == 0) {
-                    mainHandler.post { 
-                        loadingBar.visibility = View.GONE
-                        updateCategories()
-                    }
-                }
+                if (counter.decrementAndGet() == 0) finalize()
             })
         }
     }
