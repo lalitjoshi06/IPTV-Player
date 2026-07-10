@@ -280,6 +280,17 @@ class PlayerActivity : AppCompatActivity() {
         currentDrmType = drmType
         lastLicenseError = null
 
+        // Reject protocols ExoPlayer core cannot play (RTSP, RTMP, UDP/RTP
+        // multicast, etc.) up front so we show a clear message instead of
+        // looping on a generic failure.
+        if (isUnsupportedProtocol(currentMpdUrl)) {
+            showErrorOverlay(
+                "Unsupported Stream",
+                "This source uses a protocol that is not supported by the player:\n$currentMpdUrl\n\nSupported: HLS (.m3u8), DASH (.mpd), Smooth Streaming, and progressive files."
+            )
+            return
+        }
+
         player?.release()
         player = null
         
@@ -414,11 +425,13 @@ class PlayerActivity : AppCompatActivity() {
             .setUri(currentMpdUrl)
             .setMediaMetadata(androidx.media3.common.MediaMetadata.Builder().setTitle(currentName).build())
 
-        val lowerUrl = currentMpdUrl.lowercase()
-        if (lowerUrl.contains(".m3u8") || lowerUrl.contains("m3u8") || lowerUrl.contains("hls")) {
-            mediaItemBuilder.setMimeType(MimeTypes.APPLICATION_M3U8)
-        } else if (lowerUrl.contains(".mpd") || lowerUrl.contains("dash") || licenseUrl.isNotBlank()) {
-            mediaItemBuilder.setMimeType(MimeTypes.APPLICATION_MPD)
+        // Determine container type from the URL itself. Previously a non-blank
+        // licenseUrl forced DASH, which wrongly tagged HLS+DRM streams as MPD
+        // and broke them. DRM is now applied separately (below) and must not
+        // influence container detection.
+        val resolvedMime = resolveStreamMimeType(currentMpdUrl)
+        if (resolvedMime != null) {
+            mediaItemBuilder.setMimeType(resolvedMime)
         }
 
         if (drmConfiguration != null) {
@@ -489,6 +502,42 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun hideErrorOverlay() {
         errorOverlay.visibility = View.GONE
+    }
+
+    /**
+     * Protocols that the ExoPlayer core library cannot play. These require
+     * either a separate (often deprecated) extension or a local proxy, so we
+     * reject them explicitly with a clear message.
+     */
+    private fun isUnsupportedProtocol(url: String): Boolean {
+        val lower = url.lowercase()
+        return lower.startsWith("rtsp") ||
+                lower.startsWith("rtmp") ||
+                lower.startsWith("rtp://") ||
+                lower.startsWith("udp://") ||
+                lower.startsWith("igmp://") ||
+                lower.startsWith("rtp@") ||
+                lower.startsWith("udp@")
+    }
+
+    /**
+     * Resolve the container MIME type from the stream URL.
+     * Returns null when the type cannot be inferred, in which case ExoPlayer's
+     * default sniffing is used for progressive/unknown containers.
+     * DRM (licenseUrl) is deliberately NOT considered here — a stream's
+     * container is independent of whether it is encrypted.
+     */
+    private fun resolveStreamMimeType(url: String): String? {
+        val lower = url.lowercase()
+        return when {
+            lower.contains(".m3u8") || lower.endsWith("m3u8") || lower.contains("hls") ->
+                MimeTypes.APPLICATION_M3U8
+            lower.contains(".mpd") || lower.contains("dash") ->
+                MimeTypes.APPLICATION_MPD
+            lower.contains(".ism") || lower.contains("smoothstreaming") || lower.contains("/manifest") ->
+                MimeTypes.APPLICATION_SS
+            else -> null
+        }
     }
 
     /**
