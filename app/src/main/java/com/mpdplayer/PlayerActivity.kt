@@ -64,6 +64,9 @@ class PlayerActivity : AppCompatActivity() {
     private lateinit var sideCategoryList: View
     private lateinit var rvSideCategories: RecyclerView
     private lateinit var sideCategoryTitle: TextView
+    private lateinit var errorOverlay: View
+    private lateinit var errorTitle: TextView
+    private lateinit var errorMessage: TextView
 
     private var player: ExoPlayer? = null
     private var currentChannel: Channel? = null
@@ -88,6 +91,9 @@ class PlayerActivity : AppCompatActivity() {
     private var errorRecoveryScheduled = false
 
     @Volatile
+    private var lastLicenseError: String? = null
+
+    @Volatile
     private var currentRequestHeaders: Map<String, String> = mapOf(
         "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
     )
@@ -98,33 +104,15 @@ class PlayerActivity : AppCompatActivity() {
             val url = request.url.toString()
             val builder = request.newBuilder()
             
-            // Apply current headers
-            currentRequestHeaders.forEach { (k, v) -> 
+            // Apply the current request headers. These come exclusively from the
+            // playlist (KODIPROP stream_headers / URL-pipe headers) and the
+            // default User-Agent set in playChannel. No provider-specific
+            // Origin/Referer are hard coded here so the global player stays
+            // playlist-driven.
+            currentRequestHeaders.forEach { (k, v) ->
                 builder.header(k, v)
             }
-            
-            // Critical: Ensure User-Agent is consistent and modern
-            if (!currentRequestHeaders.containsKey("User-Agent")) {
-                builder.header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36")
-            }
-            
-            // Force headers for Akamai/TataPlay segments and license workers
-            if (url.contains("akamaized.net") || url.contains("bpaicatchup") || url.contains("tataplay") || url.contains("workers.dev")) {
-                // Only set if not already present in currentRequestHeaders
-                if (!currentRequestHeaders.containsKey("Origin")) {
-                    builder.header("Origin", "https://watch.tataplay.com")
-                }
-                if (!currentRequestHeaders.containsKey("Referer")) {
-                    builder.header("Referer", "https://watch.tataplay.com/")
-                }
-            }
-            
-            // JioTV Heuristics
-            if (url.contains("jiotv") || url.contains("jio.com")) {
-                if (!currentRequestHeaders.containsKey("Origin")) builder.header("Origin", "https://www.jiotv.com")
-                if (!currentRequestHeaders.containsKey("Referer")) builder.header("Referer", "https://www.jiotv.com/")
-            }
-            
+
             val finalRequest = builder.build()
             val response = chain.proceed(finalRequest)
             if (!response.isSuccessful) {
@@ -187,6 +175,9 @@ class PlayerActivity : AppCompatActivity() {
         sideCategoryList = findViewById(R.id.sideCategoryList)
         rvSideCategories = findViewById(R.id.rvSideCategories)
         sideCategoryTitle = findViewById(R.id.sideCategoryTitle)
+        errorOverlay = findViewById(R.id.errorOverlay)
+        errorTitle = findViewById(R.id.errorTitle)
+        errorMessage = findViewById(R.id.errorMessage)
 
         rvSideChannels.layoutManager = LinearLayoutManager(this)
         rvSideCategories.layoutManager = LinearLayoutManager(this)
@@ -287,7 +278,8 @@ class PlayerActivity : AppCompatActivity() {
         currentMpdUrl = mpdUrl
         currentLicenseUrl = licenseUrl
         currentDrmType = drmType
-        
+        lastLicenseError = null
+
         player?.release()
         player = null
         
@@ -310,28 +302,11 @@ class PlayerActivity : AppCompatActivity() {
         if (!headers.containsKey("User-Agent")) {
             headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
         }
-        
-        // Provider-specific Origin/Referer: only add when the stream URL actually
-        // belongs to that provider. Never force TataPlay headers onto unrelated
-        // streams (breaks other HLS providers). Playlist KODIPROP stream_headers
-        // already take precedence above.
-        val urlLc = mpdUrl.lowercase()
-        if (!headers.containsKey("Origin")) {
-            when {
-                urlLc.contains("tataplay") || urlLc.contains("tp.m3u8") ->
-                    headers["Origin"] = "https://watch.tataplay.com"
-                urlLc.contains("jio") || urlLc.contains("jiotv") ->
-                    headers["Origin"] = "https://www.jiotv.com"
-            }
-        }
-        if (!headers.containsKey("Referer")) {
-            when {
-                urlLc.contains("tataplay") || urlLc.contains("tp.m3u8") ->
-                    headers["Referer"] = "https://watch.tataplay.com/"
-                urlLc.contains("jio") || urlLc.contains("jiotv") ->
-                    headers["Referer"] = "https://www.jiotv.com/"
-            }
-        }
+
+        // Origin/Referer (and any other headers) come from the playlist's
+        // per-source headers (KODIPROP stream_headers). Nothing provider-specific
+        // is hard coded here, so a bare global player honors only what the
+        // playlist declares.
 
         currentRequestHeaders = headers
 
@@ -371,6 +346,7 @@ class PlayerActivity : AppCompatActivity() {
                                         defaultCallback.executeKeyRequest(uuid, request)
                                     } catch (e: Exception) {
                                         Log.e("PlayerActivity", "License request failed for ${drmConfig.licenseUri}", e)
+                                        lastLicenseError = e.message ?: e.javaClass.simpleName
                                         throw e
                                     }
                                     val responseString = String(response.data).replace("\u0000", "").trim()
@@ -405,9 +381,21 @@ class PlayerActivity : AppCompatActivity() {
                                 }
                             }
                         } else {
-                            val cb = androidx.media3.exoplayer.drm.HttpMediaDrmCallback(drmConfig.licenseUri.toString(), dataSourceFactory)
-                            headers.forEach { (k, v) -> cb.setKeyRequestProperty(k, v) }
-                            cb
+                            val inner = androidx.media3.exoplayer.drm.HttpMediaDrmCallback(drmConfig.licenseUri.toString(), dataSourceFactory)
+                            headers.forEach { (k, v) -> inner.setKeyRequestProperty(k, v) }
+                            object : androidx.media3.exoplayer.drm.MediaDrmCallback {
+                                override fun executeProvisionRequest(uuid: UUID, request: androidx.media3.exoplayer.drm.ExoMediaDrm.ProvisionRequest): androidx.media3.exoplayer.drm.MediaDrmCallback.Response {
+                                    return inner.executeProvisionRequest(uuid, request)
+                                }
+                                override fun executeKeyRequest(uuid: UUID, request: androidx.media3.exoplayer.drm.ExoMediaDrm.KeyRequest): androidx.media3.exoplayer.drm.MediaDrmCallback.Response {
+                                    return try {
+                                        inner.executeKeyRequest(uuid, request)
+                                    } catch (e: Exception) {
+                                        lastLicenseError = e.message ?: e.javaClass.simpleName
+                                        throw e
+                                    }
+                                }
+                            }
                         }
                         
                         androidx.media3.exoplayer.drm.DefaultDrmSessionManager.Builder()
@@ -446,6 +434,7 @@ class PlayerActivity : AppCompatActivity() {
                 if (playbackState == Player.STATE_READY) {
                     retryCount = 0
                     bufferPercentage.visibility = View.GONE
+                    hideErrorOverlay()
                     savePreferredSource(currentMpdUrl)
                 }
             }
@@ -453,7 +442,9 @@ class PlayerActivity : AppCompatActivity() {
             override fun onPlayerError(error: PlaybackException) {
                 Log.e("PlayerActivity", "Playback Error: ${error.errorCodeName} (${error.errorCode})")
                 if (errorRecoveryScheduled) return
-                
+
+                showErrorForPlaybackException(error)
+
                 val channel = currentChannel
                 if (retryCount < 1) {
                     retryCount++
@@ -485,6 +476,64 @@ class PlayerActivity : AppCompatActivity() {
         player?.prepare()
         player?.play()
         updateInfoBarUI()
+    }
+
+    /**
+     * Show a friendly, user-visible error overlay on the player screen.
+     */
+    private fun showErrorOverlay(title: String, message: String) {
+        errorTitle.text = title
+        errorMessage.text = message
+        errorOverlay.visibility = View.VISIBLE
+    }
+
+    private fun hideErrorOverlay() {
+        errorOverlay.visibility = View.GONE
+    }
+
+    /**
+     * Map a Media3 PlaybackException to a human-readable message and show it.
+     * Distinguishes unreachable stream hosts from unreachable license servers.
+     */
+    private fun showErrorForPlaybackException(error: PlaybackException) {
+        val host = try {
+            android.net.Uri.parse(currentMpdUrl).host ?: currentMpdUrl
+        } catch (e: Exception) { currentMpdUrl }
+
+        val licenseHost = if (currentLicenseUrl.isNotBlank()) {
+            try {
+                android.net.Uri.parse(currentLicenseUrl).host ?: currentLicenseUrl
+            } catch (e: Exception) { currentLicenseUrl }
+        } else null
+
+        val (title, message) = when {
+            // License / DRM acquisition failures
+            error.errorCode == PlaybackException.ERROR_CODE_DRM_LICENSE_ACQUISITION_FAILED ||
+            (lastLicenseError != null && currentLicenseUrl.isNotBlank()) -> {
+                val detail = lastLicenseError ?: error.message ?: error.errorCodeName
+                val lh = licenseHost ?: currentLicenseUrl
+                "License Server Unreachable" to
+                    "Could not reach the license server ($lh).\n$detail"
+            }
+            // Host / network unreachable for the stream
+            error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
+            error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT -> {
+                "Cannot Reach Stream" to
+                    "The stream host ($host) is unreachable.\nCheck the playlist URL or your connection."
+            }
+            // Other IO errors (404, 403, etc.)
+            error.errorCode >= 2000 && error.errorCode < 3000 -> {
+                val subType = error.cause?.message ?: error.message ?: error.errorCodeName
+                "Stream Error" to
+                    "Failed to load the stream from ($host).\n$subType"
+            }
+            else -> {
+                "Playback Error" to
+                    "${error.errorCodeName}${lastLicenseError?.let { " (license: $it)" } ?: ""}"
+            }
+        }
+
+        showErrorOverlay(title, message)
     }
 
     /**

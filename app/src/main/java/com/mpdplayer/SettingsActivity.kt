@@ -13,8 +13,11 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.CheckBox
+import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.TextView
 import android.widget.Toast
+import android.text.InputType
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -201,6 +204,45 @@ class SettingsActivity : AppCompatActivity() {
         prefs.edit().putString("playlists_json", Gson().toJson(playlists)).apply()
     }
 
+    private fun showEditUrlDialog(playlist: Playlist, pos: Int) {
+        val input = android.widget.EditText(this).apply {
+            setText(playlist.url)
+            setSelection(playlist.url.length)
+            inputType = android.text.InputType.TYPE_TEXT_VARIATION_URI
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+            setPadding(40, 24, 40, 24)
+        }
+        val container = FrameLayout(this).apply {
+            addView(input)
+            setPadding(40, 20, 40, 0)
+        }
+        AlertDialog.Builder(this, androidx.appcompat.R.style.Theme_AppCompat_Dialog_Alert)
+            .setTitle("Edit Playlist URL")
+            .setMessage(playlist.name)
+            .setView(container)
+            .setPositiveButton("Save") { _, _ ->
+                val newUrl = input.text.toString().trim()
+                if (newUrl.isNotBlank() && newUrl != playlist.url) {
+                    playlist.url = newUrl
+                    savePlaylists()
+                    adapter.notifyItemChanged(pos)
+                    // Mark for reload so the new URL takes effect immediately.
+                    val prefs = getSharedPreferences("mpd_player_prefs", Context.MODE_PRIVATE)
+                    val reloadSet = prefs.getStringSet("reload_playlists", mutableSetOf())?.toMutableSet() ?: mutableSetOf()
+                    reloadSet.add(playlist.name)
+                    prefs.edit().putStringSet("reload_playlists", reloadSet).apply()
+                    Toast.makeText(this, "URL updated. Reloading '${playlist.name}' on return...", Toast.LENGTH_LONG).show()
+                } else if (newUrl.isBlank()) {
+                    Toast.makeText(this, "URL cannot be empty", Toast.LENGTH_SHORT).show()
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
     private inner class PlaylistAdapter : RecyclerView.Adapter<PlaylistAdapter.VH>() {
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int) = VH(
             LayoutInflater.from(parent.context).inflate(R.layout.item_playlist_settings, parent, false)
@@ -227,7 +269,7 @@ class SettingsActivity : AppCompatActivity() {
                 if (pos == RecyclerView.NO_POSITION) return@setOnLongClickListener true
                 val playlist = playlists[pos]
                 val epgLabel = if (playlist.useEpg) "EPG: ON (tap to disable)" else "EPG: OFF (tap to enable)"
-                val options = arrayOf(epgLabel, "Reload This Playlist", "Remove Playlist", "Cancel")
+                val options = arrayOf(epgLabel, "Edit URL", "Reload This Playlist", "Remove Playlist", "Cancel")
                 AlertDialog.Builder(this@SettingsActivity, androidx.appcompat.R.style.Theme_AppCompat_Dialog_Alert)
                     .setTitle(playlist.name)
                     .setItems(options) { _, which ->
@@ -238,6 +280,9 @@ class SettingsActivity : AppCompatActivity() {
                                 Toast.makeText(this@SettingsActivity, "EPG ${if (playlist.useEpg) "enabled" else "disabled"} for '${playlist.name}'", Toast.LENGTH_SHORT).show()
                             }
                             1 -> {
+                                showEditUrlDialog(playlist, pos)
+                            }
+                            2 -> {
                                 val prefs = getSharedPreferences("mpd_player_prefs", Context.MODE_PRIVATE)
                                 val reloadSet = prefs.getStringSet("reload_playlists", mutableSetOf())?.toMutableSet() ?: mutableSetOf()
                                 reloadSet.add(playlist.name)
@@ -245,7 +290,7 @@ class SettingsActivity : AppCompatActivity() {
                                 Toast.makeText(this@SettingsActivity, "Reloading '${playlist.name}' on return...", Toast.LENGTH_SHORT).show()
                                 finish()
                             }
-                            2 -> {
+                            3 -> {
                                 playlists.removeAt(pos)
                                 savePlaylists()
                                 notifyDataSetChanged()
