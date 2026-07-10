@@ -10,6 +10,13 @@ import java.net.URL
 
 object PlaylistParser {
 
+    // Precompiled regexes — compiling per line for every #EXTINF/#EXTM3U entry
+    // is a major cost on large playlists, so compile once at class load.
+    private val EXT_M3U_TVG_URL = Regex("(x-tvg-url|url-tvg)\\s*=\\s*\"([^\"]*)\"", RegexOption.IGNORE_CASE)
+    private val TVG_ID = Regex("tvg-id=\"([^\"]*)\"")
+    private val TVG_LOGO = Regex("tvg-logo=\"([^\"]*)\"")
+    private val GROUP_TITLE = Regex("group-title=\"([^\"]*)\"")
+
     private fun mapDrmType(raw: String): String = when {
         raw.contains("widevine", true) -> "widevine"
         raw.contains("playready", true) -> "playready"
@@ -71,6 +78,7 @@ object PlaylistParser {
                 var currentTvgId = ""
                 var currentLicenseUrl = ""
                 var currentDrmTypeRaw = ""
+                var currentManifestType = ""
                 val currentHeaders = mutableMapOf<String, String>()
                 val currentAltIds = mutableSetOf<String>()
                 val epgUrls = mutableListOf<String>()
@@ -81,8 +89,7 @@ object PlaylistParser {
 
                     when {
                         l.startsWith("#EXTM3U", ignoreCase = true) -> {
-                            val regex = Regex("(x-tvg-url|url-tvg)\\s*=\\s*\"([^\"]*)\"", RegexOption.IGNORE_CASE)
-                            val urlsRaw = regex.find(l)?.groupValues?.getOrNull(2) ?: ""
+                            val urlsRaw = EXT_M3U_TVG_URL.find(l)?.groupValues?.getOrNull(2) ?: ""
                             if (urlsRaw.isNotEmpty()) {
                                 val split = urlsRaw.split(Regex("[,\\s]+")).filter { it.isNotBlank() }
                                 epgUrls.addAll(split)
@@ -90,9 +97,9 @@ object PlaylistParser {
                         }
 
                         l.startsWith("#EXTINF:") -> {
-                            val tvgId = Regex("tvg-id=\"([^\"]*)\"").find(l)?.groupValues?.getOrNull(1) ?: ""
-                            val logo = Regex("tvg-logo=\"([^\"]*)\"").find(l)?.groupValues?.getOrNull(1) ?: ""
-                            val group = Regex("group-title=\"([^\"]*)\"").find(l)?.groupValues?.getOrNull(1) ?: ""
+                            val tvgId = TVG_ID.find(l)?.groupValues?.getOrNull(1) ?: ""
+                            val logo = TVG_LOGO.find(l)?.groupValues?.getOrNull(1) ?: ""
+                            val group = GROUP_TITLE.find(l)?.groupValues?.getOrNull(1) ?: ""
                             val name = l.substringAfterLast(",").trim()
 
                             currentTvgId = tvgId
@@ -109,6 +116,10 @@ object PlaylistParser {
 
                         l.startsWith("#KODIPROP:") && l.contains("license_type") -> {
                             currentDrmTypeRaw = l.substringAfter("=").trim()
+                        }
+
+                        l.startsWith("#KODIPROP:") && l.contains("manifest_type") -> {
+                            currentManifestType = l.substringAfter("=").trim()
                         }
 
                         l.startsWith("#KODIPROP:") && l.contains("stream_headers") -> {
@@ -152,7 +163,7 @@ object PlaylistParser {
                                     logoUrl = currentLogo,
                                     group = currentGroup,
                                     tvgId = currentTvgId,
-                                    sources = mutableListOf(StreamSource(streamUrl, licenseUrl, playlistName, currentHeaders.toMap(), drmType))
+                                    sources = mutableListOf(StreamSource(streamUrl, licenseUrl, playlistName, currentHeaders.toMap(), drmType, currentManifestType))
                                 )
                                 channel.altIds.addAll(currentAltIds)
                                 channels.add(channel)
@@ -160,6 +171,7 @@ object PlaylistParser {
                             currentName = ""
                             currentLicenseUrl = ""
                             currentDrmTypeRaw = ""
+                            currentManifestType = ""
                             currentHeaders.clear()
                             currentAltIds.clear()
                         }

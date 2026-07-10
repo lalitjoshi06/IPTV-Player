@@ -425,11 +425,17 @@ class PlayerActivity : AppCompatActivity() {
             .setUri(currentMpdUrl)
             .setMediaMetadata(androidx.media3.common.MediaMetadata.Builder().setTitle(currentName).build())
 
-        // Determine container type from the URL itself. Previously a non-blank
-        // licenseUrl forced DASH, which wrongly tagged HLS+DRM streams as MPD
-        // and broke them. DRM is now applied separately (below) and must not
-        // influence container detection.
-        val resolvedMime = resolveStreamMimeType(currentMpdUrl)
+        // Determine container type. The playlist may declare it explicitly via
+        // KODIPROP manifest_type (e.g. MPD streams served from URLs without a
+        // ".mpd"/"dash" marker). That takes precedence; otherwise we infer from
+        // the URL. DRM (licenseUrl) must NOT influence container detection.
+        val sourceManifestType = currentChannel?.sources?.getOrNull(currentSourceIndex)?.manifestType?.lowercase()
+        val resolvedMime = when (sourceManifestType) {
+            "mpd", "dash" -> MimeTypes.APPLICATION_MPD
+            "hls", "m3u8" -> MimeTypes.APPLICATION_M3U8
+            "smoothstreaming", "smooth", "ism" -> MimeTypes.APPLICATION_SS
+            else -> resolveStreamMimeType(currentMpdUrl)
+        }
         if (resolvedMime != null) {
             mediaItemBuilder.setMimeType(resolvedMime)
         }

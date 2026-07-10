@@ -30,6 +30,7 @@ class MainActivity : AppCompatActivity() {
         var sChannelsJson: String? = null
         var sAllChannelsList: List<Channel>? = null
         var sPlaylists: List<Playlist>? = null
+        const val CHANNELS_CACHE_FILE = "channels_cache.json"
     }
 
     private fun getCachedPlaylists(): List<Playlist> {
@@ -91,7 +92,13 @@ class MainActivity : AppCompatActivity() {
         btnSearch.setOnClickListener { showSearchDialog() }
 
         loadFromCache()
-        loadAllPlaylists(silent = allChannels.isNotEmpty())
+        // A cold start (onCreate) always needs to (re)fetch EPG, because the
+        // in-memory EpgManager is empty after a process restart. We must not
+        // gate this on cache existence — the cache file may exist while EPG
+        // data does not. Skipping EPG only happens on in-process resume
+        // (applyActiveFilter), where EPG is still loaded in memory.
+        val cacheExisted = allChannels.isNotEmpty()
+        loadAllPlaylists(silent = cacheExisted, refreshEpg = true)
     }
 
     private fun refreshEpg() {
@@ -115,51 +122,88 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun loadFromCache() {
-        val prefs = getSharedPreferences("mpd_player_prefs", Context.MODE_PRIVATE)
-        val json = prefs.getString("cached_channels_json", "")
-        if (!json.isNullOrEmpty()) {
+        val json = readChannelCacheFile() ?: return
+        try {
+            val cached: List<Channel> = gson.fromJson(json, object : TypeToken<List<Channel>>() {}.type)
+            val activeNames = getCachedPlaylists().filter { it.isActive }.map { it.name }.toSet()
+
+            val filteredChannels = cached.mapNotNull { ch ->
+                val activeSources = ch.sources.filter { it.playlistName in activeNames }
+                if (activeSources.isNotEmpty()) {
+                    ch.sources.clear(); ch.sources.addAll(activeSources); ch
+                } else null
+            }
+
+            allChannels.clear(); allChannels.addAll(filteredChannels)
+
+            // Restore playlist-to-EPG mapping and filter by active playlists
+            val prefs = getSharedPreferences("mpd_player_prefs", Context.MODE_PRIVATE)
+            val epgMapJson = prefs.getString("cached_epg_playlist_map", "{}")
             try {
-                val cached: List<Channel> = gson.fromJson(json, object : TypeToken<List<Channel>>() {}.type)
-                val activeNames = getCachedPlaylists().filter { it.isActive }.map { it.name }.toSet()
-
-                val filteredChannels = cached.mapNotNull { ch ->
-                    val activeSources = ch.sources.filter { it.playlistName in activeNames }
-                    if (activeSources.isNotEmpty()) {
-                        ch.sources.clear(); ch.sources.addAll(activeSources); ch
-                    } else null
+                val type = object : TypeToken<Map<String, Set<String>>>() {}.type
+                val epgMap: Map<String, Set<String>> = gson.fromJson(epgMapJson, type)
+                EpgManager.setPlaylistEpgMap(epgMap)
+                epgUrls.clear()
+                activeNames.forEach { name ->
+                    epgMap[name]?.let { epgUrls.addAll(it) }
                 }
+            } catch (e: Exception) {
+                // Fallback: load flat list (legacy)
+                val epgList: List<String> = gson.fromJson(prefs.getString("cached_epg_urls", "[]"), object : TypeToken<List<String>>() {}.type)
+                epgUrls.clear(); epgUrls.addAll(epgList)
+            }
+            updateCategories()
+        } catch (e: Exception) {}
+    }
 
-                allChannels.clear(); allChannels.addAll(filteredChannels)
-
-                // Restore playlist-to-EPG mapping and filter by active playlists
-                val epgMapJson = prefs.getString("cached_epg_playlist_map", "{}")
-                try {
-                    val type = object : TypeToken<Map<String, Set<String>>>() {}.type
-                    val epgMap: Map<String, Set<String>> = gson.fromJson(epgMapJson, type)
-                    EpgManager.setPlaylistEpgMap(epgMap)
-                    epgUrls.clear()
-                    activeNames.forEach { name ->
-                        epgMap[name]?.let { epgUrls.addAll(it) }
-                    }
-                } catch (e: Exception) {
-                    // Fallback: load flat list (legacy)
-                    val epgList: List<String> = gson.fromJson(prefs.getString("cached_epg_urls", "[]"), object : TypeToken<List<String>>() {}.type)
-                    epgUrls.clear(); epgUrls.addAll(epgList)
-                }
-                updateCategories()
-                refreshEpg()
-            } catch (e: Exception) {}
+    /**
+     * Re-filter the already-in-memory channel list by the current set of active
+     * playlists. Used on resume instead of re-parsing the whole cache file,
+     * which is much cheaper (no disk read / Gson deserialize).
+     */
+    private fun applyActiveFilter() {
+        val activeNames = getCachedPlaylists().filter { it.isActive }.map { it.name }.toSet()
+        val filtered = allChannels.filter { ch -> ch.sources.any { it.playlistName in activeNames } }
+        allChannels.clear(); allChannels.addAll(filtered)
+        val prefs = getSharedPreferences("mpd_player_prefs", Context.MODE_PRIVATE)
+        try {
+            val type = object : TypeToken<Map<String, Set<String>>>() {}.type
+            val epgMap: Map<String, Set<String>> = gson.fromJson(prefs.getString("cached_epg_playlist_map", "{}"), type)
+            EpgManager.setPlaylistEpgMap(epgMap)
+            epgUrls.clear()
+            activeNames.forEach { name -> epgMap[name]?.let { epgUrls.addAll(it) } }
+        } catch (e: Exception) {
+            val epgList: List<String> = gson.fromJson(prefs.getString("cached_epg_urls", "[]"), object : TypeToken<List<String>>() {}.type)
+            epgUrls.clear(); epgUrls.addAll(epgList)
         }
+        updateCategories()
+    }
+
+    private fun readChannelCacheFile(): String? {
+        val file = java.io.File(cacheDir, CHANNELS_CACHE_FILE)
+        return if (file.exists()) try { file.readText() } catch (e: Exception) { null } else null
     }
 
     private fun saveToCache() {
+        val epgUrlsCopy = epgUrls.toList()
+        val epgMap = EpgManager.getPlaylistEpgMap()
+        val channelsCopy = allChannels.toList()
+        // Serialize + persist the (potentially huge) channel list on a background
+        // thread so the UI never blocks. EPG metadata is small, keep it in prefs.
+        Thread {
+            try {
+                val json = gson.toJson(channelsCopy)
+                java.io.File(cacheDir, CHANNELS_CACHE_FILE).writeText(json)
+                sChannelsJson = json
+                sAllChannelsList = channelsCopy
+            } catch (e: Exception) {
+                Log.e("MainActivity", "Failed to write channel cache", e)
+            }
+        }.start()
         val prefs = getSharedPreferences("mpd_player_prefs", Context.MODE_PRIVATE)
-        sChannelsJson = gson.toJson(allChannels)
-        sAllChannelsList = allChannels.toList()
         prefs.edit()
-            .putString("cached_channels_json", sChannelsJson)
-            .putString("cached_epg_urls", gson.toJson(epgUrls.toList()))
-            .putString("cached_epg_playlist_map", gson.toJson(EpgManager.getPlaylistEpgMap()))
+            .putString("cached_epg_urls", gson.toJson(epgUrlsCopy))
+            .putString("cached_epg_playlist_map", gson.toJson(epgMap))
             .apply()
     }
 
@@ -222,7 +266,10 @@ class MainActivity : AppCompatActivity() {
             loadFromCache()
             reloadSet.forEach { name -> reloadSinglePlaylist(name) }
         } else {
-            loadFromCache()
+            // Resume (e.g. returning from player): data is already in memory.
+            // Re-filter by active playlists cheaply instead of re-parsing the
+            // whole cache file + re-fetching EPG.
+            if (allChannels.isEmpty()) loadFromCache() else applyActiveFilter()
         }
 
         // Keep focus locked in the channel list (not the category menu) when returning.
@@ -231,7 +278,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun loadAllPlaylists(silent: Boolean = false) {
+    private fun loadAllPlaylists(silent: Boolean = false, refreshEpg: Boolean = true) {
         val playlists = getCachedPlaylists()
         if (playlists.isEmpty()) {
             if (!silent) resetPlaylist()
@@ -272,7 +319,7 @@ class MainActivity : AppCompatActivity() {
                         epgUrls.addAll(tempEpgUrls)
                         updateCategories()
                         saveToCache()
-                        refreshEpg()
+                        if (refreshEpg) refreshEpg()
                     }
                 }
             }, { err ->

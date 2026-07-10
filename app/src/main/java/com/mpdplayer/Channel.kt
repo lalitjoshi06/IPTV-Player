@@ -5,7 +5,8 @@ data class StreamSource(
     val licenseUrl: String = "",
     val playlistName: String = "",
     val headers: Map<String, String> = emptyMap(),
-    val drmType: String = ""
+    val drmType: String = "",
+    val manifestType: String = ""
 )
 
 data class Channel(
