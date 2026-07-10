@@ -571,6 +571,14 @@ class PlayerActivity : AppCompatActivity() {
      * Distinguishes unreachable stream hosts from unreachable license servers.
      */
     private fun showErrorForPlaybackException(error: PlaybackException) {
+        // During key rotation the player transiently fails to acquire a new
+        // license. This is expected and recovers on the automatic retry, so we
+        // must NOT show the error overlay — just let the buffering/percentage
+        // indicator reflect the (re)loading state as usual.
+        if (error.errorCode == PlaybackException.ERROR_CODE_DRM_LICENSE_ACQUISITION_FAILED) {
+            return
+        }
+
         val host = try {
             android.net.Uri.parse(currentMpdUrl).host ?: currentMpdUrl
         } catch (e: Exception) { currentMpdUrl }
