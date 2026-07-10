@@ -291,21 +291,9 @@ class PlayerActivity : AppCompatActivity() {
             return
         }
 
-        player?.release()
-        player = null
-        
-        // Ultra-Fast loading optimization: extremely low buffer requirements for instant startup
-        val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(
-                10000,  // min buffer
-                30000,  // max buffer
-                250,    // buffer for playback
-                500     // buffer for rebuffering
-            )
-            .setPrioritizeTimeOverSizeThresholds(true)
-            .build()
-
-        // Apply per-stream headers
+        // Per-stream request headers (used by the OkHttp interceptor for media
+        // segments). DRM license request headers are carried on the media item's
+        // DrmConfiguration instead.
         val sourceHeaders = currentChannel?.sources?.getOrNull(currentSourceIndex)?.headers
         val headers = sourceHeaders?.toMutableMap() ?: mutableMapOf()
         
@@ -337,89 +325,12 @@ class PlayerActivity : AppCompatActivity() {
                 .build()
         } else null
 
-        player = ExoPlayer.Builder(this)
-            .setMediaSourceFactory(
-                DefaultMediaSourceFactory(dataSourceFactory)
-                    .setDrmSessionManagerProvider {
-                        val drmConfig = drmConfiguration ?: return@setDrmSessionManagerProvider androidx.media3.exoplayer.drm.DrmSessionManager.DRM_UNSUPPORTED
-                        
-                        val callback = if (drmConfig.scheme == C.CLEARKEY_UUID) {
-                            object : androidx.media3.exoplayer.drm.MediaDrmCallback {
-                                val defaultCallback = androidx.media3.exoplayer.drm.HttpMediaDrmCallback(drmConfig.licenseUri.toString(), dataSourceFactory)
-                                
-                                override fun executeProvisionRequest(uuid: UUID, request: androidx.media3.exoplayer.drm.ExoMediaDrm.ProvisionRequest): androidx.media3.exoplayer.drm.MediaDrmCallback.Response {
-                                    return defaultCallback.executeProvisionRequest(uuid, request)
-                                }
-
-                                override fun executeKeyRequest(uuid: UUID, request: androidx.media3.exoplayer.drm.ExoMediaDrm.KeyRequest): androidx.media3.exoplayer.drm.MediaDrmCallback.Response {
-                                    headers.forEach { (k, v) -> defaultCallback.setKeyRequestProperty(k, v) }
-                                    val response = try {
-                                        defaultCallback.executeKeyRequest(uuid, request)
-                                    } catch (e: Exception) {
-                                        Log.e("PlayerActivity", "License request failed for ${drmConfig.licenseUri}", e)
-                                        lastLicenseError = e.message ?: e.javaClass.simpleName
-                                        throw e
-                                    }
-                                    val responseString = String(response.data).replace("\u0000", "").trim()
-                                    Log.d("PlayerActivity", "ClearKey Raw Response: $responseString")
-                                    
-                                    if (responseString.startsWith("{") || responseString.contains("\"keys\"")) {
-                                        Log.d("PlayerActivity", "ClearKey: Response is valid JSON, passing through")
-                                        val cleanJson = responseString.toByteArray(Charsets.UTF_8)
-                                        return androidx.media3.exoplayer.drm.MediaDrmCallback.Response(cleanJson)
-                                    }
-                                    
-                                    return try {
-                                        val delimiters = charArrayOf(':', ',', '|')
-                                        val parts = responseString.split(*delimiters).filter { it.isNotBlank() }
-                                        if (parts.size >= 2) {
-                                            val kid = parts[parts.size - 2].trim().replace("\"", "")
-                                            val k = parts[parts.size - 1].trim().replace("\"", "")
-                                            fun isHex(s: String) = s.matches(Regex("^[0-9a-fA-F]+$"))
-                                            val finalKid = if (isHex(kid)) hexToBase64Url(kid) else kid
-                                            val finalKey = if (isHex(k)) hexToBase64Url(k) else k
-                                            val json = "{\"keys\":[{\"kty\":\"oct\",\"k\":\"$finalKey\",\"kid\":\"$finalKid\"}],\"type\":\"temporary\"}"
-                                            Log.d("PlayerActivity", "ClearKey Transformed JSON: $json")
-                                            androidx.media3.exoplayer.drm.MediaDrmCallback.Response(json.toByteArray())
-                                        } else {
-                                            Log.e("PlayerActivity", "Could not parse ClearKey response: $responseString")
-                                            response
-                                        }
-                                    } catch (e: Exception) { 
-                                        Log.e("PlayerActivity", "Error transforming ClearKey response", e)
-                                        response 
-                                    }
-                                }
-                            }
-                        } else {
-                            val inner = androidx.media3.exoplayer.drm.HttpMediaDrmCallback(drmConfig.licenseUri.toString(), dataSourceFactory)
-                            headers.forEach { (k, v) -> inner.setKeyRequestProperty(k, v) }
-                            object : androidx.media3.exoplayer.drm.MediaDrmCallback {
-                                override fun executeProvisionRequest(uuid: UUID, request: androidx.media3.exoplayer.drm.ExoMediaDrm.ProvisionRequest): androidx.media3.exoplayer.drm.MediaDrmCallback.Response {
-                                    return inner.executeProvisionRequest(uuid, request)
-                                }
-                                override fun executeKeyRequest(uuid: UUID, request: androidx.media3.exoplayer.drm.ExoMediaDrm.KeyRequest): androidx.media3.exoplayer.drm.MediaDrmCallback.Response {
-                                    return try {
-                                        inner.executeKeyRequest(uuid, request)
-                                    } catch (e: Exception) {
-                                        lastLicenseError = e.message ?: e.javaClass.simpleName
-                                        throw e
-                                    }
-                                }
-                            }
-                        }
-                        
-                        androidx.media3.exoplayer.drm.DefaultDrmSessionManager.Builder()
-                            .setUuidAndExoMediaDrmProvider(drmConfig.scheme, androidx.media3.exoplayer.drm.FrameworkMediaDrm.DEFAULT_PROVIDER)
-                            .setMultiSession(true)
-                            .build(callback)
-                    }
-            )
-            .setLoadControl(loadControl)
-            .setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), true)
-            .build()
-
-        playerView.player = player
+        // Reuse a single ExoPlayer instance across channel switches so pressing a
+        // channel starts (near) instantly — we no longer rebuild renderers, audio
+        // focus and the DRM provider on every switch. The DRM provider is
+        // stateless and reads its config from the media item being played.
+        ensurePlayer()
+        player?.stop()
         
         val mediaItemBuilder = MediaItem.Builder()
             .setUri(currentMpdUrl)
@@ -445,56 +356,165 @@ class PlayerActivity : AppCompatActivity() {
         }
 
         player?.setMediaItem(mediaItemBuilder.build())
-        
-        player?.addListener(object : Player.Listener {
-            override fun onPlaybackStateChanged(playbackState: Int) {
-                bufferingBar.visibility = View.GONE
-                if (playbackState == Player.STATE_READY) bufferPercentage.visibility = View.GONE
-                if (playbackState == Player.STATE_READY) {
-                    retryCount = 0
-                    bufferPercentage.visibility = View.GONE
-                    hideErrorOverlay()
-                    savePreferredSource(currentMpdUrl)
-                }
-            }
-
-            override fun onPlayerError(error: PlaybackException) {
-                Log.e("PlayerActivity", "Playback Error: ${error.errorCodeName} (${error.errorCode})")
-                if (errorRecoveryScheduled) return
-
-                showErrorForPlaybackException(error)
-
-                val channel = currentChannel
-                if (retryCount < 1) {
-                    retryCount++
-                    errorRecoveryScheduled = true
-                    mainHandler.postDelayed({
-                        errorRecoveryScheduled = false
-                        playChannel(currentMpdUrl, currentLicenseUrl, currentDrmType)
-                    }, 500)
-                } else if (channel != null && currentSourceIndex + 1 < channel.sources.size) {
-                    errorRecoveryScheduled = true
-                    currentSourceIndex++
-                    val nextSource = channel.sources[currentSourceIndex]
-                    mainHandler.post {
-                        Toast.makeText(this@PlayerActivity, "Source failed. Switching...", Toast.LENGTH_SHORT).show()
-                        playChannel(nextSource.url, nextSource.licenseUrl, nextSource.drmType)
-                        errorRecoveryScheduled = false
-                    }
-                } else if (retryCount < maxRetries) {
-                    retryCount++
-                    val pos = player?.currentPosition ?: 0
-                    playChannel(currentMpdUrl, currentLicenseUrl, currentDrmType, pos)
-                } else {
-                    runOnUiThread { Toast.makeText(this@PlayerActivity, "Playback failed", Toast.LENGTH_LONG).show() }
-                }
-            }
-        })
 
         if (startPos > 0) player?.seekTo(startPos)
         player?.prepare()
         player?.play()
         updateInfoBarUI()
+    }
+
+    private val playerListener = object : Player.Listener {
+        override fun onPlaybackStateChanged(playbackState: Int) {
+            bufferingBar.visibility = View.GONE
+            if (playbackState == Player.STATE_READY) bufferPercentage.visibility = View.GONE
+            if (playbackState == Player.STATE_READY) {
+                retryCount = 0
+                bufferPercentage.visibility = View.GONE
+                hideErrorOverlay()
+                savePreferredSource(currentMpdUrl)
+            }
+        }
+
+        override fun onPlayerError(error: PlaybackException) {
+            Log.e("PlayerActivity", "Playback Error: ${error.errorCodeName} (${error.errorCode})")
+            if (errorRecoveryScheduled) return
+
+            showErrorForPlaybackException(error)
+
+            val channel = currentChannel
+            if (retryCount < 1) {
+                retryCount++
+                errorRecoveryScheduled = true
+                mainHandler.postDelayed({
+                    errorRecoveryScheduled = false
+                    playChannel(currentMpdUrl, currentLicenseUrl, currentDrmType)
+                }, 500)
+            } else if (channel != null && currentSourceIndex + 1 < channel.sources.size) {
+                errorRecoveryScheduled = true
+                currentSourceIndex++
+                val nextSource = channel.sources[currentSourceIndex]
+                mainHandler.post {
+                    Toast.makeText(this@PlayerActivity, "Source failed. Switching...", Toast.LENGTH_SHORT).show()
+                    playChannel(nextSource.url, nextSource.licenseUrl, nextSource.drmType)
+                    errorRecoveryScheduled = false
+                }
+            } else if (retryCount < maxRetries) {
+                retryCount++
+                val pos = player?.currentPosition ?: 0
+                playChannel(currentMpdUrl, currentLicenseUrl, currentDrmType, pos)
+            } else {
+                runOnUiThread { Toast.makeText(this@PlayerActivity, "Playback failed", Toast.LENGTH_LONG).show() }
+            }
+        }
+    }
+
+    /**
+     * Build (once) and reuse a single ExoPlayer instance across channel switches.
+     * The DRM session manager provider is stateless: it derives the DRM config
+     * from the media item being played, so switching between DRM and non-DRM
+     * streams works without rebuilding the player. Faster startup buffer values
+     * keep channel changes and key-rotation recovery quick.
+     */
+    private fun ensurePlayer() {
+        if (player != null) return
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(
+                15000,  // min buffer
+                40000,  // max buffer
+                700,    // buffer for playback (fast, near-instant start)
+                1200    // buffer for rebuffering (fast key-rotation recovery)
+            )
+            .setPrioritizeTimeOverSizeThresholds(true)
+            .build()
+
+        player = ExoPlayer.Builder(this)
+            .setMediaSourceFactory(
+                DefaultMediaSourceFactory(dataSourceFactory)
+                    .setDrmSessionManagerProvider { mediaItem -> buildDrmSessionManager(mediaItem) }
+            )
+            .setLoadControl(loadControl)
+            .setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), true)
+            .build()
+
+        playerView.player = player
+        player?.addListener(playerListener)
+    }
+
+    private fun buildDrmSessionManager(mediaItem: MediaItem): androidx.media3.exoplayer.drm.DrmSessionManager {
+        val drmConfig = mediaItem.localConfiguration?.drmConfiguration
+            ?: return androidx.media3.exoplayer.drm.DrmSessionManager.DRM_UNSUPPORTED
+
+        val headers = drmConfig.licenseRequestHeaders
+        val callback = if (drmConfig.scheme == C.CLEARKEY_UUID) {
+            object : androidx.media3.exoplayer.drm.MediaDrmCallback {
+                val defaultCallback = androidx.media3.exoplayer.drm.HttpMediaDrmCallback(drmConfig.licenseUri.toString(), dataSourceFactory)
+
+                override fun executeProvisionRequest(uuid: UUID, request: androidx.media3.exoplayer.drm.ExoMediaDrm.ProvisionRequest): androidx.media3.exoplayer.drm.MediaDrmCallback.Response {
+                    return defaultCallback.executeProvisionRequest(uuid, request)
+                }
+
+                override fun executeKeyRequest(uuid: UUID, request: androidx.media3.exoplayer.drm.ExoMediaDrm.KeyRequest): androidx.media3.exoplayer.drm.MediaDrmCallback.Response {
+                    headers.forEach { (k, v) -> defaultCallback.setKeyRequestProperty(k, v) }
+                    val response = try {
+                        defaultCallback.executeKeyRequest(uuid, request)
+                    } catch (e: Exception) {
+                        Log.e("PlayerActivity", "License request failed for ${drmConfig.licenseUri}", e)
+                        lastLicenseError = e.message ?: e.javaClass.simpleName
+                        throw e
+                    }
+                    val responseString = String(response.data).replace("\u0000", "").trim()
+                    Log.d("PlayerActivity", "ClearKey Raw Response: $responseString")
+
+                    if (responseString.startsWith("{") || responseString.contains("\"keys\"")) {
+                        Log.d("PlayerActivity", "ClearKey: Response is valid JSON, passing through")
+                        val cleanJson = responseString.toByteArray(Charsets.UTF_8)
+                        return androidx.media3.exoplayer.drm.MediaDrmCallback.Response(cleanJson)
+                    }
+
+                    return try {
+                        val delimiters = charArrayOf(':', ',', '|')
+                        val parts = responseString.split(*delimiters).filter { it.isNotBlank() }
+                        if (parts.size >= 2) {
+                            val kid = parts[parts.size - 2].trim().replace("\"", "")
+                            val k = parts[parts.size - 1].trim().replace("\"", "")
+                            fun isHex(s: String) = s.matches(Regex("^[0-9a-fA-F]+$"))
+                            val finalKid = if (isHex(kid)) hexToBase64Url(kid) else kid
+                            val finalKey = if (isHex(k)) hexToBase64Url(k) else k
+                            val json = "{\"keys\":[{\"kty\":\"oct\",\"k\":\"$finalKey\",\"kid\":\"$finalKid\"}],\"type\":\"temporary\"}"
+                            Log.d("PlayerActivity", "ClearKey Transformed JSON: $json")
+                            androidx.media3.exoplayer.drm.MediaDrmCallback.Response(json.toByteArray())
+                        } else {
+                            Log.e("PlayerActivity", "Could not parse ClearKey response: $responseString")
+                            response
+                        }
+                    } catch (e: Exception) {
+                        Log.e("PlayerActivity", "Error transforming ClearKey response", e)
+                        response
+                    }
+                }
+            }
+        } else {
+            val inner = androidx.media3.exoplayer.drm.HttpMediaDrmCallback(drmConfig.licenseUri.toString(), dataSourceFactory)
+            headers.forEach { (k, v) -> inner.setKeyRequestProperty(k, v) }
+            object : androidx.media3.exoplayer.drm.MediaDrmCallback {
+                override fun executeProvisionRequest(uuid: UUID, request: androidx.media3.exoplayer.drm.ExoMediaDrm.ProvisionRequest): androidx.media3.exoplayer.drm.MediaDrmCallback.Response {
+                    return inner.executeProvisionRequest(uuid, request)
+                }
+                override fun executeKeyRequest(uuid: UUID, request: androidx.media3.exoplayer.drm.ExoMediaDrm.KeyRequest): androidx.media3.exoplayer.drm.MediaDrmCallback.Response {
+                    return try {
+                        inner.executeKeyRequest(uuid, request)
+                    } catch (e: Exception) {
+                        lastLicenseError = e.message ?: e.javaClass.simpleName
+                        throw e
+                    }
+                }
+            }
+        }
+
+        return androidx.media3.exoplayer.drm.DefaultDrmSessionManager.Builder()
+            .setUuidAndExoMediaDrmProvider(drmConfig.scheme, androidx.media3.exoplayer.drm.FrameworkMediaDrm.DEFAULT_PROVIDER)
+            .setMultiSession(true)
+            .build(callback)
     }
 
     /**
