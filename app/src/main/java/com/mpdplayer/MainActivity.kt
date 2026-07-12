@@ -408,11 +408,35 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Re-key backed-up favorites to the current favoriteKey format (tvgId /
+     * normalized name). Older backups stored composite `playlistName::name` or
+     * plain-name keys; remove/move operate on the current key, so without this
+     * migration restored favorites could never be removed or reordered. Resolved
+     * channels are re-stored under their current key; unmatched (orphan) keys are
+     * preserved so nothing is silently lost.
+     */
+    private fun migrateFavoritesIfNeeded() {
+        if (allChannels.isEmpty()) return
+        val prefs = getSharedPreferences("mpd_player_prefs", Context.MODE_PRIVATE)
+        val raw: MutableList<String> = try {
+            gson.fromJson(prefs.getString("favorites_list", "[]"), object : TypeToken<MutableList<String>>() {}.type)
+        } catch (e: Exception) { return }
+
+        val resolved = Channel.resolveFavorites(raw, allChannels)
+        val migrated = resolved.map { Channel.favoriteKey(it) }.toMutableList()
+        raw.forEach { k -> if (k.isNotBlank() && !migrated.contains(k)) migrated.add(k) }
+        if (migrated != raw) {
+            prefs.edit().putString("favorites_list", gson.toJson(migrated)).apply()
+        }
+    }
+
     private fun updateCategories() {
         val currentName = lastSelectedCategoryName
             ?: if (categories.isNotEmpty() && selectedCategoryIndex < categories.size) categories[selectedCategoryIndex].name else ""
         categories.clear()
         val prefs = getSharedPreferences("mpd_player_prefs", Context.MODE_PRIVATE)
+        migrateFavoritesIfNeeded()
         val favJson = prefs.getString("favorites_list", "[]")
         val favorites: List<String> = gson.fromJson(favJson, object : TypeToken<List<String>>() {}.type)
         
