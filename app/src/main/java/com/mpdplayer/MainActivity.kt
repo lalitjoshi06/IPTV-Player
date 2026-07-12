@@ -412,20 +412,45 @@ class MainActivity : AppCompatActivity() {
      * Re-key backed-up favorites to the current favoriteKey format (tvgId /
      * normalized name). Older backups stored composite `playlistName::name` or
      * plain-name keys; remove/move operate on the current key, so without this
-     * migration restored favorites could never be removed or reordered. Resolved
-     * channels are re-stored under their current key; unmatched (orphan) keys are
-     * preserved so nothing is silently lost.
+     * migration restored favorites could never be removed or reordered.
+     *
+     * The migration is idempotent: each stored key is resolved to its channel and
+     * re-stored under that channel's CURRENT key (deduplicated), so re-running it
+     * never re-appends the old keys or grows the list. Only genuinely unresolvable
+     * keys (channel no longer present) are preserved verbatim.
      */
+    private var favoritesMigrated = false
     private fun migrateFavoritesIfNeeded() {
-        if (allChannels.isEmpty()) return
+        if (favoritesMigrated || allChannels.isEmpty()) return
+        favoritesMigrated = true
         val prefs = getSharedPreferences("mpd_player_prefs", Context.MODE_PRIVATE)
-        val raw: MutableList<String> = try {
-            gson.fromJson(prefs.getString("favorites_list", "[]"), object : TypeToken<MutableList<String>>() {}.type)
+        val raw: List<String> = try {
+            gson.fromJson(prefs.getString("favorites_list", "[]"), object : TypeToken<List<String>>() {}.type)
         } catch (e: Exception) { return }
+        if (raw.isEmpty()) return
 
-        val resolved = Channel.resolveFavorites(raw, allChannels)
-        val migrated = resolved.map { Channel.favoriteKey(it) }.toMutableList()
-        raw.forEach { k -> if (k.isNotBlank() && !migrated.contains(k)) migrated.add(k) }
+        // Same lookup index resolveFavorites uses.
+        val index = mutableMapOf<String, Channel>()
+        allChannels.forEach { ch ->
+            val tvg = ch.tvgId.trim().lowercase()
+            if (tvg.isNotEmpty()) index.putIfAbsent(tvg, ch)
+            ch.sources.forEach { src ->
+                val composite = "${src.playlistName}::${ch.name.trim()}".lowercase()
+                index.putIfAbsent(composite, ch)
+            }
+            index.putIfAbsent(ch.name.trim().lowercase(), ch)
+            ch.altIds.forEach { id -> index.putIfAbsent(id.trim().lowercase(), ch) }
+        }
+
+        val seen = mutableSetOf<String>()
+        val migrated = mutableListOf<String>()
+        raw.forEach { k ->
+            val key = k.trim().lowercase()
+            if (key.isEmpty()) return@forEach
+            val ch = index[key]
+            val finalKey = if (ch != null) Channel.favoriteKey(ch) else k
+            if (seen.add(finalKey)) migrated.add(finalKey)
+        }
         if (migrated != raw) {
             prefs.edit().putString("favorites_list", gson.toJson(migrated)).apply()
         }

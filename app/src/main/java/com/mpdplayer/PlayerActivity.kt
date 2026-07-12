@@ -741,7 +741,7 @@ class PlayerActivity : AppCompatActivity() {
         bottomInfoBar.visibility = View.VISIBLE
         btnChannels.requestFocus()
         mainHandler.removeCallbacks(hideInfoBarRunnable)
-        mainHandler.postDelayed(hideInfoBarRunnable, 8000)
+        mainHandler.postDelayed(hideInfoBarRunnable, 4000)
     }
 
     private val hideInfoBarRunnable = Runnable { 
@@ -1033,7 +1033,7 @@ class PlayerActivity : AppCompatActivity() {
             when (keyCode) {
                 KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT -> {
                     mainHandler.removeCallbacks(hideInfoBarRunnable)
-                    mainHandler.postDelayed(hideInfoBarRunnable, 8000)
+                    mainHandler.postDelayed(hideInfoBarRunnable, 4000)
                     return super.onKeyDown(keyCode, event)
                 }
                 KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
