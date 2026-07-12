@@ -59,8 +59,6 @@ class MainActivity : AppCompatActivity() {
     private val epgUrls = mutableSetOf<String>()
     
     private var selectedCategoryIndex = 0
-    // Remember the last selected category by name so returning from PlayerActivity
-    // (and Favorites being inserted at the top) keeps the right category selected.
     private var lastSelectedCategoryName: String? = null
     private val mainPrefs by lazy { getSharedPreferences("mpd_player_prefs", Context.MODE_PRIVATE) }
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -85,18 +83,13 @@ class MainActivity : AppCompatActivity() {
 
         rvChannels.layoutManager = LinearLayoutManager(this)
         rvChannels.adapter = channelAdapter
-        rvChannels.isFocusable = true // Ensure channels are focusable
+        rvChannels.isFocusable = true
 
         findViewById<View>(R.id.btnReset).setOnClickListener { resetPlaylist() }
         btnSettings.setOnClickListener { startActivity(Intent(this, SettingsActivity::class.java)) }
         btnSearch.setOnClickListener { showSearchDialog() }
 
         loadFromCache()
-        // A cold start (onCreate) always needs to (re)fetch EPG, because the
-        // in-memory EpgManager is empty after a process restart. We must not
-        // gate this on cache existence — the cache file may exist while EPG
-        // data does not. Skipping EPG only happens on in-process resume
-        // (applyActiveFilter), where EPG is still loaded in memory.
         val cacheExisted = allChannels.isNotEmpty()
         loadAllPlaylists(silent = cacheExisted, refreshEpg = true)
     }
@@ -117,63 +110,75 @@ class MainActivity : AppCompatActivity() {
 
     private fun onEpgPartLoaded(pending: java.util.concurrent.atomic.AtomicInteger) {
         pending.decrementAndGet()
-        // Update the list as each EPG source finishes so programs appear progressively.
         mainHandler.post { channelAdapter.notifyDataSetChanged() }
     }
 
     private fun loadFromCache() {
-        val json = readChannelCacheFile() ?: return
-        try {
-            val cached: List<Channel> = gson.fromJson(json, object : TypeToken<List<Channel>>() {}.type)
-            val activeNames = getCachedPlaylists().filter { it.isActive }.map { it.name }.toSet()
-
-            val filteredChannels = cached.mapNotNull { ch ->
-                val activeSources = ch.sources.filter { it.playlistName in activeNames }
-                if (activeSources.isNotEmpty()) {
-                    ch.sources.clear(); ch.sources.addAll(activeSources); ch
-                } else null
-            }
-
-            allChannels.clear(); allChannels.addAll(filteredChannels)
-
-            // Restore playlist-to-EPG mapping and filter by active playlists
-            val prefs = getSharedPreferences("mpd_player_prefs", Context.MODE_PRIVATE)
-            val epgMapJson = prefs.getString("cached_epg_playlist_map", "{}")
+        Thread {
             try {
+                val json = readChannelCacheFile() ?: return@Thread
+                val cached: List<Channel> = gson.fromJson(json, object : TypeToken<List<Channel>>() {}.type)
+                val activeNames = getCachedPlaylists().filter { it.isActive }.map { it.name }.toSet()
+
+                val filteredChannels = cached.mapNotNull { ch ->
+                    val activeSources = ch.sources.filter { it.playlistName in activeNames }
+                    if (activeSources.isNotEmpty()) {
+                        ch.sources.clear()
+                        ch.sources.addAll(activeSources)
+                        ch
+                    } else null
+                }
+
+                val prefs = getSharedPreferences("mpd_player_prefs", Context.MODE_PRIVATE)
+                val epgMapJson = prefs.getString("cached_epg_playlist_map", "{}")
                 val type = object : TypeToken<Map<String, Set<String>>>() {}.type
-                val epgMap: Map<String, Set<String>> = gson.fromJson(epgMapJson, type)
-                EpgManager.setPlaylistEpgMap(epgMap)
-                epgUrls.clear()
-                activeNames.forEach { name ->
-                    epgMap[name]?.let { epgUrls.addAll(it) }
+                val epgMap: Map<String, Set<String>> = try { gson.fromJson(epgMapJson, type) } catch(e: Exception) { emptyMap() }
+
+                mainHandler.post {
+                    allChannels.clear()
+                    allChannels.addAll(filteredChannels)
+                    EpgManager.setPlaylistEpgMap(epgMap)
+                    epgUrls.clear()
+                    activeNames.forEach { name -> epgMap[name]?.let { epgUrls.addAll(it) } }
+                    updateCategories()
                 }
             } catch (e: Exception) {
-                // Fallback: load flat list (legacy)
-                val epgList: List<String> = gson.fromJson(prefs.getString("cached_epg_urls", "[]"), object : TypeToken<List<String>>() {}.type)
-                epgUrls.clear(); epgUrls.addAll(epgList)
+                Log.e("MainActivity", "Failed to load cache", e)
             }
-            updateCategories()
-        } catch (e: Exception) {}
+        }.start()
     }
 
-    /**
-     * Re-filter the already-in-memory channel list by the current set of active
-     * playlists. Used on resume instead of re-parsing the whole cache file,
-     * which is much cheaper (no disk read / Gson deserialize).
-     */
     private fun applyActiveFilter() {
         val activeNames = getCachedPlaylists().filter { it.isActive }.map { it.name }.toSet()
-        val filtered = allChannels.filter { ch -> ch.sources.any { it.playlistName in activeNames } }
-        allChannels.clear(); allChannels.addAll(filtered)
+        if (activeNames.isEmpty()) {
+            allChannels.clear()
+            updateCategories()
+            return
+        }
+
+        val filtered = allChannels.filter { ch -> 
+            val hasActive = ch.sources.any { it.playlistName in activeNames }
+            if (hasActive) {
+                val activeSources = ch.sources.filter { it.playlistName in activeNames }
+                ch.sources.clear()
+                ch.sources.addAll(activeSources)
+            }
+            hasActive
+        }
+        
+        allChannels.clear()
+        allChannels.addAll(filtered)
+        
         val prefs = getSharedPreferences("mpd_player_prefs", Context.MODE_PRIVATE)
         try {
             val type = object : TypeToken<Map<String, Set<String>>>() {}.type
-            val epgMap: Map<String, Set<String>> = gson.fromJson(prefs.getString("cached_epg_playlist_map", "{}"), type)
+            val epgMapJson = prefs.getString("cached_epg_playlist_map", "{}")
+            val epgMap: Map<String, Set<String>> = gson.fromJson(epgMapJson, type)
             EpgManager.setPlaylistEpgMap(epgMap)
             epgUrls.clear()
             activeNames.forEach { name -> epgMap[name]?.let { epgUrls.addAll(it) } }
         } catch (e: Exception) {
-            val epgList: List<String> = gson.fromJson(prefs.getString("cached_epg_urls", "[]"), object : TypeToken<List<String>>() {}.type)
+            val epgList: List<String> = try { gson.fromJson(prefs.getString("cached_epg_urls", "[]"), object : TypeToken<List<String>>() {}.type) } catch(ex: Exception) { emptyList() }
             epgUrls.clear(); epgUrls.addAll(epgList)
         }
         updateCategories()
@@ -185,26 +190,26 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun saveToCache() {
+        val channelsCopy = synchronized(allChannels) { allChannels.toList() }
         val epgUrlsCopy = epgUrls.toList()
         val epgMap = EpgManager.getPlaylistEpgMap()
-        val channelsCopy = allChannels.toList()
-        // Serialize + persist the (potentially huge) channel list on a background
-        // thread so the UI never blocks. EPG metadata is small, keep it in prefs.
+        
         Thread {
             try {
                 val json = gson.toJson(channelsCopy)
                 java.io.File(cacheDir, CHANNELS_CACHE_FILE).writeText(json)
                 sChannelsJson = json
                 sAllChannelsList = channelsCopy
+                
+                val prefs = getSharedPreferences("mpd_player_prefs", Context.MODE_PRIVATE)
+                prefs.edit()
+                    .putString("cached_epg_urls", gson.toJson(epgUrlsCopy))
+                    .putString("cached_epg_playlist_map", gson.toJson(epgMap))
+                    .apply()
             } catch (e: Exception) {
                 Log.e("MainActivity", "Failed to write channel cache", e)
             }
         }.start()
-        val prefs = getSharedPreferences("mpd_player_prefs", Context.MODE_PRIVATE)
-        prefs.edit()
-            .putString("cached_epg_urls", gson.toJson(epgUrlsCopy))
-            .putString("cached_epg_playlist_map", gson.toJson(epgMap))
-            .apply()
     }
 
     private fun reloadSinglePlaylist(playlistName: String) {
@@ -218,7 +223,6 @@ class MainActivity : AppCompatActivity() {
                     ch.sources.any { it.playlistName == playlistName }
                 }
                 mergeIntoList(allChannels, result.channels)
-                // Remove stale EPG URLs for this playlist, add new ones
                 EpgManager.getPlaylistEpgMap()[playlistName]?.forEach { epgUrls.remove(it) }
                 if (playlist.useEpg && result.epgUrls.isNotEmpty()) {
                     epgUrls.addAll(result.epgUrls)
@@ -266,13 +270,9 @@ class MainActivity : AppCompatActivity() {
             loadFromCache()
             reloadSet.forEach { name -> reloadSinglePlaylist(name) }
         } else {
-            // Resume (e.g. returning from player): data is already in memory.
-            // Re-filter by active playlists cheaply instead of re-parsing the
-            // whole cache file + re-fetching EPG.
             if (allChannels.isEmpty()) loadFromCache() else applyActiveFilter()
         }
 
-        // Keep focus locked in the channel list (not the category menu) when returning.
         if (displayedChannels.isNotEmpty()) {
             rvChannels.requestFocus()
         }
@@ -299,17 +299,11 @@ class MainActivity : AppCompatActivity() {
         val tempChannels = mutableListOf<Channel>()
         val tempEpgUrls = mutableSetOf<String>()
         val successNames = mutableSetOf<String>()
-        // Snapshot of the currently-loaded (cache-based) channels, so we can fall
-        // back to them for any playlist that fails to (re)load this launch.
         val cacheChannels = synchronized(allChannels) { allChannels.toList() }
         val counter = AtomicInteger(activePlaylists.size)
 
         val finalize: () -> Unit = {
             val successful = synchronized(successNames) { successNames.toSet() }
-            // Cached channels belonging to playlists that did NOT load this launch.
-            // Merging them back in (deduped by tvgId/name, sources combined) keeps
-            // the channel list — and therefore the favorites count — stable even
-            // when a playlist is temporarily unreachable, instead of dropping it.
             val failedCache = cacheChannels.filter { ch -> ch.sources.none { it.playlistName in successful } }
             val failedPlaylists = activeNames - successful
             mainHandler.post {
@@ -318,7 +312,6 @@ class MainActivity : AppCompatActivity() {
                 mergeIntoList(allChannels, failedCache)
                 epgUrls.clear()
                 epgUrls.addAll(tempEpgUrls)
-                // Keep EPG URLs for the playlists that failed to load this launch.
                 failedPlaylists.forEach { name -> EpgManager.getPlaylistEpgMap()[name]?.let { epgUrls.addAll(it) } }
                 loadingBar.visibility = View.GONE
                 updateCategories()
@@ -337,7 +330,6 @@ class MainActivity : AppCompatActivity() {
                         EpgManager.associatePlaylistWithEpg(playlist.name, result.epgUrls)
                     }
                 }
-
                 if (counter.decrementAndGet() == 0) finalize()
             }, { err ->
                 if (counter.decrementAndGet() == 0) finalize()
@@ -346,25 +338,33 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun mergeIntoList(target: MutableList<Channel>, newList: List<Channel>) {
-        val index = HashMap<String, Channel>(target.size)
+        val idIndex = HashMap<String, Channel>()
+        val nameIndex = HashMap<String, Channel>()
+        
         target.forEach { ch ->
-            if (ch.tvgId.isNotBlank()) index[ch.tvgId.trim().lowercase()] = ch
-            index[ch.name.trim().lowercase()] = ch
+            val id = ch.tvgId.trim().lowercase()
+            if (id.isNotEmpty()) idIndex[id] = ch
+            else nameIndex[ch.name.trim().lowercase()] = ch
         }
+        
         newList.forEach { newCh ->
             val newName = newCh.name.trim().lowercase()
-            val newKey = newCh.tvgId.trim().lowercase()
-            val existing = if (newKey.isNotEmpty()) index[newKey] ?: index[newName] else index[newName]
+            val newId = newCh.tvgId.trim().lowercase()
+            val existing = if (newId.isNotEmpty()) idIndex[newId] else nameIndex[newName]
 
             if (existing != null) {
-                if (newCh.tvgId.isNotBlank()) existing.altIds.add(newCh.tvgId.trim().lowercase())
-                existing.altIds.addAll(newCh.altIds)
-                newCh.sources.forEach { s -> if (existing.sources.none { it.url == s.url }) existing.sources.add(s) }
+                newCh.sources.forEach { s -> 
+                    if (existing.sources.none { it.url == s.url }) {
+                        existing.sources.add(s)
+                    }
+                }
+                if (newId.isNotEmpty()) existing.altIds.add(newId)
+                existing.altIds.addAll(newCh.altIds.map { it.lowercase() })
             } else {
-                if (newCh.tvgId.isNotBlank()) newCh.altIds.add(newCh.tvgId.trim().lowercase())
+                if (newId.isNotEmpty()) newCh.altIds.add(newId)
                 target.add(newCh)
-                index[newName] = newCh
-                if (newKey.isNotEmpty()) index[newKey] = newCh
+                if (newId.isNotEmpty()) idIndex[newId] = newCh
+                else nameIndex[newName] = newCh
             }
         }
     }
@@ -428,7 +428,6 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (keyCode == android.view.KeyEvent.KEYCODE_DPAD_RIGHT) {
-            // Cancel any pending category selection when moving to channel list
             categorySelectionRunnable?.let { mainHandler.removeCallbacks(it) }
         }
         return super.onKeyDown(keyCode, event)
@@ -444,25 +443,18 @@ class MainActivity : AppCompatActivity() {
         mainPrefs.edit().putString("last_category_name", cat.name).apply()
         displayedChannels.clear()
         displayedChannels.addAll(cat.channels)
-        
-        // Show GLOBAL channel count
         channelCount.text = "Total Channels: ${allChannels.size}"
         
         mainHandler.post {
             if (isFinishing) return@post
-            // Update channels list
             if (!rvChannels.isComputingLayout) {
                 channelAdapter.notifyDataSetChanged()
-                // ONLY scroll to top if the user just moved to this category
-                // Don't scroll if focus is already in the channel list to avoid jumping
                 if (!rvChannels.hasFocus()) {
                     rvChannels.scrollToPosition(0)
                 }
             }
             
-            // Highlight the selected category
             if (oldIndex != index && !rvCategories.isComputingLayout) {
-                // Update only the text colors manually to avoid full rebind/scroll
                 for (i in 0 until rvCategories.childCount) {
                     val child = rvCategories.getChildAt(i)
                     val holder = rvCategories.getChildViewHolder(child) as? CategoryAdapter.ViewHolder
@@ -491,7 +483,6 @@ class MainActivity : AppCompatActivity() {
         val isFavoriteGroup = categories.getOrNull(selectedCategoryIndex)?.name == "FAVORITES"
 
         if (isFavoriteGroup) {
-            // Ensure key is migrated from old format before showing reorder dialog
             if (oldKey != key && favorites.contains(oldKey) && !favorites.contains(key)) {
                 favorites.remove(oldKey)
                 favorites.add(key)
@@ -519,11 +510,11 @@ class MainActivity : AppCompatActivity() {
                 when (which) {
                     0 -> {
                         moveFavorite(key, -1)
-                        showFavoriteReorderDialog(channel, key) // Reopen
+                        showFavoriteReorderDialog(channel, key)
                     }
                     1 -> {
                         moveFavorite(key, 1)
-                        showFavoriteReorderDialog(channel, key) // Reopen
+                        showFavoriteReorderDialog(channel, key)
                     }
                     2 -> {
                         val prefs = getSharedPreferences("mpd_player_prefs", Context.MODE_PRIVATE)
@@ -555,7 +546,6 @@ class MainActivity : AppCompatActivity() {
             favorites.add(newIndex, item)
             prefs.edit().putString("favorites_list", gson.toJson(favorites)).apply()
             
-            // Refresh without resetting selection
             val currentCategoryName = categories[selectedCategoryIndex].name
             categories.clear()
             val favList = Channel.resolveFavorites(favorites, allChannels)
@@ -574,7 +564,6 @@ class MainActivity : AppCompatActivity() {
                 categoryAdapter.notifyDataSetChanged()
             }
             
-            // Re-focus the moved item
             mainHandler.postDelayed({
                 val pos = displayedChannels.indexOfFirst { Channel.favoriteKey(it) == key }
                 if (pos != -1) {
@@ -602,7 +591,6 @@ class MainActivity : AppCompatActivity() {
             if (query.isNotEmpty()) {
                 val filtered = allChannels.filter { it.name.contains(query, ignoreCase = true) }
                 if (filtered.isNotEmpty()) {
-                    // Temporarily inject search results into categories
                     val searchCat = CategoryInfo("SEARCH: $query", filtered)
                     val existingSearch = categories.indexOfFirst { it.name.startsWith("SEARCH:") }
                     if (existingSearch != -1) categories.removeAt(existingSearch)
@@ -638,13 +626,12 @@ class MainActivity : AppCompatActivity() {
             holder.itemView.setOnFocusChangeListener { v, hasFocus ->
                 if (hasFocus) {
                     v.animate().scaleX(1.05f).scaleY(1.05f).setDuration(150).start()
-                    // Prevent focus jumps during fast navigation
                     categorySelectionRunnable?.let { mainHandler.removeCallbacks(it) }
                     categorySelectionRunnable = Runnable { 
                         if (!isFinishing && holder.itemView.hasFocus()) {
                             selectCategory(position)
                         }
-                    }.also { mainHandler.postDelayed(it, 500) } // 500ms delay for fast scrolling stability
+                    }.also { mainHandler.postDelayed(it, 500) }
                 } else {
                     v.animate().scaleX(1.0f).scaleY(1.0f).setDuration(150).start()
                 }

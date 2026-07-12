@@ -5,8 +5,10 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.view.GestureDetector
 import android.view.KeyEvent
 import android.view.LayoutInflater
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
@@ -57,6 +59,7 @@ class PlayerActivity : AppCompatActivity() {
     private lateinit var playerTopClock: TextView
     private lateinit var infoBtnFav: ImageView
     private lateinit var btnSource: Button
+    private lateinit var btnChannels: Button
     private lateinit var btnMediaSettings: ImageView
 
     private lateinit var sideChannelList: View
@@ -64,6 +67,8 @@ class PlayerActivity : AppCompatActivity() {
     private lateinit var sideCategoryList: View
     private lateinit var rvSideCategories: RecyclerView
     private lateinit var sideCategoryTitle: TextView
+
+    private lateinit var gestureDetector: GestureDetector
     private lateinit var errorOverlay: View
     private lateinit var errorTitle: TextView
     private lateinit var errorMessage: TextView
@@ -106,11 +111,27 @@ class PlayerActivity : AppCompatActivity() {
             
             // Apply the current request headers. These come exclusively from the
             // playlist (KODIPROP stream_headers / URL-pipe headers) and the
-            // default User-Agent set in playChannel. No provider-specific
-            // Origin/Referer are hard coded here so the global player stays
-            // playlist-driven.
+            // default User-Agent set in playChannel.
             currentRequestHeaders.forEach { (k, v) ->
                 builder.header(k, v)
+            }
+            
+            // JioTV Heuristics: Only apply if not provided in playlist
+            if (url.contains("jiotv") || url.contains("jio.com")) {
+                if (!currentRequestHeaders.containsKey("Origin")) builder.header("Origin", "https://www.jiotv.com")
+                if (!currentRequestHeaders.containsKey("Referer")) builder.header("Referer", "https://www.jiotv.com/")
+                // Jio HLS often requires a specific Mobile User-Agent
+                val currentUA = currentRequestHeaders["User-Agent"] ?: ""
+                if (currentUA.contains("Windows") || currentUA.isEmpty()) {
+                    builder.header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Mobile Safari/537.36")
+                }
+                builder.header("X-Requested-With", "com.jio.jiotv")
+            }
+
+            // Force headers for Akamai/TataPlay segments (if not in playlist)
+            if (url.contains("akamaized.net") || url.contains("bpaicatchup") || url.contains("tataplay") || url.contains("workers.dev")) {
+                if (!currentRequestHeaders.containsKey("Origin")) builder.header("Origin", "https://watch.tataplay.com")
+                if (!currentRequestHeaders.containsKey("Referer")) builder.header("Referer", "https://watch.tataplay.com/")
             }
 
             val finalRequest = builder.build()
@@ -168,6 +189,7 @@ class PlayerActivity : AppCompatActivity() {
         playerTopClock = findViewById(R.id.playerTopClock)
         infoBtnFav = findViewById(R.id.infoBtnFav)
         btnSource = findViewById(R.id.btnSource)
+        btnChannels = findViewById(R.id.btnChannels)
         btnMediaSettings = findViewById(R.id.btnMediaSettings)
 
         sideChannelList = findViewById(R.id.sideChannelList)
@@ -182,9 +204,52 @@ class PlayerActivity : AppCompatActivity() {
         rvSideChannels.layoutManager = LinearLayoutManager(this)
         rvSideCategories.layoutManager = LinearLayoutManager(this)
 
+        // Unified Remote OK and Phone Tap support:
+        playerView.setOnClickListener {
+            if (sideChannelList.visibility == View.VISIBLE || sideCategoryList.visibility == View.VISIBLE) {
+                sideChannelList.visibility = View.GONE
+                sideCategoryList.visibility = View.GONE
+                playerView.requestFocus()
+            } else if (bottomInfoBar.visibility == View.VISIBLE) {
+                bottomInfoBar.visibility = View.GONE
+                playerView.requestFocus()
+            } else {
+                showInfoBar()
+            }
+        }
+
+        // Phone / touch support: tapping the video shows/hides controls.
+        gestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onDown(e: MotionEvent): Boolean = true
+            
+            override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+                playerView.performClick()
+                return true
+            }
+        })
+        playerView.setOnTouchListener { _, event -> gestureDetector.onTouchEvent(event) }
+
+        // Tapping the panel title on a phone opens the category list (no D-pad).
+        sideCategoryTitle.setOnClickListener { showSideCategoryList() }
+
         infoBtnFav.setOnClickListener { toggleCurrentFavorite() }
         btnSource.setOnClickListener { showSourceDialog() }
+        btnChannels.setOnClickListener { showSideChannelList() }
         btnMediaSettings.setOnClickListener { showMediaSettingsDialog() }
+
+        // Make selection background in downbar more visible
+        val barButtons = listOf(infoBtnFav, btnSource, btnChannels, btnMediaSettings)
+        barButtons.forEach { btn ->
+            btn.setOnFocusChangeListener { v, hasFocus ->
+                if (hasFocus) {
+                    v.animate().scaleX(1.15f).scaleY(1.15f).setDuration(150).start()
+                    v.setBackgroundColor(0x88FFFFFF.toInt()) // Solid white highlight on focus
+                } else {
+                    v.animate().scaleX(1.0f).scaleY(1.0f).setDuration(150).start()
+                    v.setBackgroundColor(0x00000000.toInt()) // Transparent when not focused
+                }
+            }
+        }
     }
 
     private fun parseIntentData() {
@@ -672,7 +737,7 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun showInfoBar() {
         bottomInfoBar.visibility = View.VISIBLE
-        infoBtnFav.requestFocus()
+        btnChannels.requestFocus()
         mainHandler.removeCallbacks(hideInfoBarRunnable)
         mainHandler.postDelayed(hideInfoBarRunnable, 8000)
     }
@@ -932,15 +997,7 @@ class PlayerActivity : AppCompatActivity() {
                 showSideCategoryList()
                 return true 
             }
-            if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) {
-                // Select the actually-focused item (robust against focus quirks).
-                val pos = sideFocusedPosition.coerceIn(0, currentCategoryChannels.size - 1)
-                switchChannel(currentCategoryChannels[pos])
-                sideChannelList.visibility = View.GONE
-                playerView.requestFocus()
-                return true
-            }
-            // Allow UP/DOWN to reach the RecyclerView for navigation
+            // Allow UP/DOWN/OK to reach the RecyclerView/Items for navigation/selection
             return super.onKeyDown(keyCode, event)
         }
         
@@ -1002,17 +1059,15 @@ class PlayerActivity : AppCompatActivity() {
     private inner class SideChannelAdapter : RecyclerView.Adapter<SideChannelAdapter.VH>() {
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int) = VH(LayoutInflater.from(parent.context).inflate(R.layout.item_side_channel, parent, false))
         override fun onBindViewHolder(holder: VH, position: Int) {
-            if (position == RecyclerView.NO_POSITION) return
             val ch = currentCategoryChannels[position]
 
             holder.tvName.text = ch.name
             holder.tvCount.visibility = View.GONE
             holder.tvName.setTextColor(if (position == currentIndex) 0xFF4CAF50.toInt() else 0xFFFFFFFF.toInt())
 
-            holder.itemView.setOnFocusChangeListener {
-                view, hasFocus ->
+            holder.itemView.setOnFocusChangeListener { view, hasFocus ->
                 if (hasFocus) {
-                    sideFocusedPosition = position
+                    sideFocusedPosition = holder.bindingAdapterPosition
                     view.animate().scaleX(1.05f).scaleY(1.05f).setDuration(150).start()
                 } else {
                     view.animate().scaleX(1.0f).scaleY(1.0f).setDuration(150).start()
@@ -1020,7 +1075,7 @@ class PlayerActivity : AppCompatActivity() {
             }
 
             holder.itemView.setOnClickListener {
-                currentIndex = position
+                currentIndex = holder.bindingAdapterPosition
                 switchChannel(ch)
                 sideChannelList.visibility = View.GONE
                 playerView.requestFocus()

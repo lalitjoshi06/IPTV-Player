@@ -41,13 +41,20 @@ data class Channel(
             return favoriteKey(channel.tvgId, channel.name, playlist)
         }
 
-        /** Resolve a list of favorite keys to Channel objects. Checks tvgId first, then composite key (playlist::name), then name, then altIds. Preserves input order. */
+        /** Resolve a list of favorite keys to Channel objects. Checks tvgId first, then all composite keys (playlist::name), then name, then altIds. Preserves input order. */
         fun resolveFavorites(keys: List<String>, allChannels: List<Channel>): List<Channel> {
             val index = mutableMapOf<String, Channel>()
             allChannels.forEach { ch ->
                 val tvg = ch.tvgId.trim().lowercase()
                 if (tvg.isNotEmpty()) index.putIfAbsent(tvg, ch)
-                index.putIfAbsent("${(ch.sources.firstOrNull()?.playlistName ?: "")}::${ch.name.trim()}".lowercase(), ch)
+                
+                // Index ALL possible composite keys for this channel so favorites are stable 
+                // regardless of which source is currently "first" after filtering/merging.
+                ch.sources.forEach { src ->
+                    val compositeKey = "${src.playlistName}::${ch.name.trim()}".lowercase()
+                    index.putIfAbsent(compositeKey, ch)
+                }
+
                 index.putIfAbsent(ch.name.trim().lowercase(), ch)
                 ch.altIds.forEach { id -> index.putIfAbsent(id.trim().lowercase(), ch) }
             }
