@@ -243,10 +243,12 @@ class PlayerActivity : AppCompatActivity() {
             btn.setOnFocusChangeListener { v, hasFocus ->
                 if (hasFocus) {
                     v.animate().scaleX(1.15f).scaleY(1.15f).setDuration(150).start()
-                    v.setBackgroundColor(0x88FFFFFF.toInt()) // Solid white highlight on focus
+                    // Higher opacity (75%) white for the selection so it pops 
+                    // against the 50% transparent bar.
+                    v.setBackgroundColor(0xC0FFFFFF.toInt()) 
                 } else {
                     v.animate().scaleX(1.0f).scaleY(1.0f).setDuration(150).start()
-                    v.setBackgroundColor(0x00000000.toInt()) // Transparent when not focused
+                    v.setBackgroundColor(0x00000000.toInt())
                 }
             }
         }

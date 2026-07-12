@@ -11,7 +11,7 @@ data class StreamSource(
 
 data class Channel(
     var name: String,
-    val logoUrl: String = "",
+    var logoUrl: String = "",
     var group: String = "",
     var tvgId: String = "",
     val channelNumber: String = "",
@@ -31,14 +31,20 @@ data class Channel(
     }
 
     companion object {
-        /** Generate a unique, stable favorite key — uses tvgId when available, otherwise playlistName::name */
+        /** Generate a unique, stable favorite key — prefers tvgId, falls back to normalized name. */
         fun favoriteKey(tvgId: String, name: String, playlistName: String): String {
-            return if (tvgId.isNotBlank()) tvgId.trim() else "${playlistName}::${name.trim()}"
+            if (tvgId.isNotBlank()) return tvgId.trim().lowercase()
+            // Normalize name: lowercase and remove all non-alphanumeric characters
+            return name.lowercase().replace(Regex("[^a-z0-9]"), "")
         }
 
         fun favoriteKey(channel: Channel): String {
-            val playlist = channel.sources.firstOrNull()?.playlistName ?: ""
-            return favoriteKey(channel.tvgId, channel.name, playlist)
+            return favoriteKey(channel.tvgId, channel.name, "")
+        }
+
+        /** Normalize a channel name for cross-playlist matching: lowercase and strip all non-alphanumeric characters. */
+        fun normalizedName(name: String): String {
+            return name.lowercase().replace(Regex("[^a-z0-9]"), "")
         }
 
         /** Resolve a list of favorite keys to Channel objects. Checks tvgId first, then all composite keys (playlist::name), then name, then altIds. Preserves input order. */

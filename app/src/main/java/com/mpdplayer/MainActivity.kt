@@ -338,33 +338,72 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun mergeIntoList(target: MutableList<Channel>, newList: List<Channel>) {
+        // Two indices: by tvgId (or any altId) and by normalized name. A channel
+        // can be matched across playlists even when one playlist supplies a tvgId
+        // and another supplies a different/absent one, or when the display name
+        // differs only by punctuation/case — as long as the normalized name matches.
         val idIndex = HashMap<String, Channel>()
         val nameIndex = HashMap<String, Channel>()
-        
-        target.forEach { ch ->
-            val id = ch.tvgId.trim().lowercase()
-            if (id.isNotEmpty()) idIndex[id] = ch
-            else nameIndex[ch.name.trim().lowercase()] = ch
-        }
-        
-        newList.forEach { newCh ->
-            val newName = newCh.name.trim().lowercase()
-            val newId = newCh.tvgId.trim().lowercase()
-            val existing = if (newId.isNotEmpty()) idIndex[newId] else nameIndex[newName]
 
-            if (existing != null) {
-                newCh.sources.forEach { s -> 
-                    if (existing.sources.none { it.url == s.url }) {
-                        existing.sources.add(s)
+        fun indexChannel(ch: Channel) {
+            val id = ch.tvgId.trim().lowercase()
+            if (id.isNotEmpty()) idIndex.putIfAbsent(id, ch)
+            ch.altIds.forEach { alt ->
+                val a = alt.trim().lowercase()
+                if (a.isNotEmpty()) idIndex.putIfAbsent(a, ch)
+            }
+            val nk = Channel.normalizedName(ch.name)
+            if (nk.isNotEmpty()) nameIndex.putIfAbsent(nk, ch)
+        }
+
+        target.forEach { indexChannel(it) }
+
+        newList.forEach { newCh ->
+            val newId = newCh.tvgId.trim().lowercase()
+            val newNameKey = Channel.normalizedName(newCh.name)
+
+            // 1) tvgId match, 2) normalized-name match, 3) altId match.
+            var existing: Channel? = null
+            if (newId.isNotEmpty()) existing = idIndex[newId]
+            if (existing == null && newNameKey.isNotEmpty()) existing = nameIndex[newNameKey]
+            if (existing == null) {
+                for (alt in newCh.altIds) {
+                    val a = alt.trim().lowercase()
+                    if (a.isNotEmpty()) {
+                        existing = idIndex[a]
+                        if (existing != null) break
                     }
                 }
-                if (newId.isNotEmpty()) existing.altIds.add(newId)
-                existing.altIds.addAll(newCh.altIds.map { it.lowercase() })
+            }
+
+            if (existing != null && existing !== newCh) {
+                // Merge sources, de-duplicating by URL so the same stream from two
+                // playlists counts as a single source.
+                newCh.sources.forEach { s ->
+                    if (existing!!.sources.none { it.url == s.url }) {
+                        existing!!.sources.add(s)
+                    }
+                }
+                // Carry over identity so future parses still resolve to this channel.
+                if (newId.isNotEmpty()) {
+                    existing!!.altIds.add(newId)
+                    idIndex.putIfAbsent(newId, existing!!)
+                }
+                newCh.altIds.forEach { alt ->
+                    val a = alt.trim().lowercase()
+                    if (a.isNotEmpty()) {
+                        existing!!.altIds.add(a)
+                        idIndex.putIfAbsent(a, existing!!)
+                    }
+                }
+                // Adopt a tvgId/group/logo if the existing channel was missing them.
+                if (existing!!.tvgId.isBlank() && newId.isNotEmpty()) existing!!.tvgId = newCh.tvgId.trim()
+                if (existing!!.group.isBlank() && newCh.group.isNotBlank()) existing!!.group = newCh.group
+                if (existing!!.logoUrl.isBlank() && newCh.logoUrl.isNotBlank()) existing!!.logoUrl = newCh.logoUrl
             } else {
                 if (newId.isNotEmpty()) newCh.altIds.add(newId)
                 target.add(newCh)
-                if (newId.isNotEmpty()) idIndex[newId] = newCh
-                else nameIndex[newName] = newCh
+                indexChannel(newCh)
             }
         }
     }

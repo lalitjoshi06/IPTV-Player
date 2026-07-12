@@ -163,7 +163,7 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="bottom"
-        android:background="#B3000000"
+        android:background="#80000000"
         android:orientation="vertical"
         android:padding="20dp"
         android:visibility="gone"
