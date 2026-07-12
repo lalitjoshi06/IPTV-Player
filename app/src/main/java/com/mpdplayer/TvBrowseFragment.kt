@@ -79,11 +79,16 @@ class TvBrowseFragment : BrowseSupportFragment() {
     private fun mergeChannels(newList: List<Channel>) {
         synchronized(allChannels) {
             newList.forEach { newCh ->
-                val existing = allChannels.find { 
-                    (it.tvgId.isNotBlank() && it.tvgId == newCh.tvgId) || 
-                    (it.name.equals(newCh.name, true) && it.group.equals(newCh.group, true))
+                // Merge strictly by exact name (case-insensitive). tvg-id is NOT used:
+                // it is not globally unique across providers (e.g. one provider's
+                // News24 and another's Z Marathi can share a tvg-id), so matching by
+                // tvg-id wrongly glued unrelated channels together.
+                val existing = allChannels.find { it.name.trim().equals(newCh.name.trim(), true) }
+                if (existing != null) {
+                    newCh.sources.forEach { s -> if (existing.sources.none { it.url == s.url }) existing.sources.add(s) }
+                } else {
+                    allChannels.add(newCh)
                 }
-                if (existing != null) existing.sources.addAll(newCh.sources) else allChannels.add(newCh)
             }
         }
     }

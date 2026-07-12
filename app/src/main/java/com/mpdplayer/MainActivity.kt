@@ -338,70 +338,41 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun mergeIntoList(target: MutableList<Channel>, newList: List<Channel>) {
-        // Two indices: by tvgId (or any altId) and by normalized name. A channel
-        // can be matched across playlists even when one playlist supplies a tvgId
-        // and another supplies a different/absent one, or when the display name
-        // differs only by punctuation/case — as long as the normalized name matches.
-        val idIndex = HashMap<String, Channel>()
+        // Merge strictly by EXACT channel name (case-insensitive, trimmed). This is
+        // the only reliable cross-provider identity: tvg-id is NOT globally unique
+        // (e.g. Jio reuses tvg-id "291" for SET HD while Tata uses "291" for Bharat
+        // Samachar), so matching by tvgId wrongly glued unrelated channels together.
+        // Same-name entries from any playlist/source combine into one channel;
+        // different names always stay separate. Sources append in encounter order so
+        // the first (primary) stream is source 0 / the default.
         val nameIndex = HashMap<String, Channel>()
 
         fun indexChannel(ch: Channel) {
-            val id = ch.tvgId.trim().lowercase()
-            if (id.isNotEmpty()) idIndex.putIfAbsent(id, ch)
-            ch.altIds.forEach { alt ->
-                val a = alt.trim().lowercase()
-                if (a.isNotEmpty()) idIndex.putIfAbsent(a, ch)
-            }
-            val nk = Channel.normalizedName(ch.name)
+            val nk = ch.name.trim().lowercase()
             if (nk.isNotEmpty()) nameIndex.putIfAbsent(nk, ch)
         }
 
         target.forEach { indexChannel(it) }
 
         newList.forEach { newCh ->
-            val newId = newCh.tvgId.trim().lowercase()
-            val newNameKey = Channel.normalizedName(newCh.name)
-
-            // 1) tvgId match, 2) normalized-name match, 3) altId match.
-            var existing: Channel? = null
-            if (newId.isNotEmpty()) existing = idIndex[newId]
-            if (existing == null && newNameKey.isNotEmpty()) existing = nameIndex[newNameKey]
-            if (existing == null) {
-                for (alt in newCh.altIds) {
-                    val a = alt.trim().lowercase()
-                    if (a.isNotEmpty()) {
-                        existing = idIndex[a]
-                        if (existing != null) break
-                    }
-                }
-            }
+            val newNameKey = newCh.name.trim().lowercase()
+            val existing = if (newNameKey.isNotEmpty()) nameIndex[newNameKey] else null
 
             if (existing != null && existing !== newCh) {
                 // Merge sources, de-duplicating by URL so the same stream from two
                 // playlists counts as a single source.
                 newCh.sources.forEach { s ->
-                    if (existing!!.sources.none { it.url == s.url }) {
-                        existing!!.sources.add(s)
+                    if (existing.sources.none { it.url == s.url }) {
+                        existing.sources.add(s)
                     }
                 }
-                // Carry over identity so future parses still resolve to this channel.
-                if (newId.isNotEmpty()) {
-                    existing!!.altIds.add(newId)
-                    idIndex.putIfAbsent(newId, existing!!)
-                }
-                newCh.altIds.forEach { alt ->
-                    val a = alt.trim().lowercase()
-                    if (a.isNotEmpty()) {
-                        existing!!.altIds.add(a)
-                        idIndex.putIfAbsent(a, existing!!)
-                    }
-                }
-                // Adopt a tvgId/group/logo if the existing channel was missing them.
-                if (existing!!.tvgId.isBlank() && newId.isNotEmpty()) existing!!.tvgId = newCh.tvgId.trim()
-                if (existing!!.group.isBlank() && newCh.group.isNotBlank()) existing!!.group = newCh.group
-                if (existing!!.logoUrl.isBlank() && newCh.logoUrl.isNotBlank()) existing!!.logoUrl = newCh.logoUrl
+                // Adopt a tvgId/group/logo only when the existing channel is missing
+                // them (cosmetic; never overwrites an existing tvgId, so EPG lookups
+                // keep using the original provider's id).
+                if (existing.tvgId.isBlank() && newCh.tvgId.isNotBlank()) existing.tvgId = newCh.tvgId.trim()
+                if (existing.group.isBlank() && newCh.group.isNotBlank()) existing.group = newCh.group
+                if (existing.logoUrl.isBlank() && newCh.logoUrl.isNotBlank()) existing.logoUrl = newCh.logoUrl
             } else {
-                if (newId.isNotEmpty()) newCh.altIds.add(newId)
                 target.add(newCh)
                 indexChannel(newCh)
             }
