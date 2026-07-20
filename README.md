@@ -108,4 +108,3 @@ APK at `app/build/outputs/apk/debug/app-debug.apk`
 
 MIT
 
-**If you want to use it just fork it and make it or use app directly from this repo release section.**
