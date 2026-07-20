@@ -94,7 +94,7 @@ class CategoryActivity : AppCompatActivity() {
             favorites.remove(key)
             if (oldKey != key) favorites.remove(oldKey)
         } else {
-            favorites.add(key)
+            favorites.add(0, key)
         }
         saveFavorites(favorites)
         

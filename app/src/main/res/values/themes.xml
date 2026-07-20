@@ -8,6 +8,7 @@
         <item name="android:navigationBarColor">@android:color/transparent</item>
         <item name="android:windowNoTitle">true</item>
         <item name="android:windowContentOverlay">@null</item>
+        <item name="android:windowBackground">@color/background_dark</item>
     </style>
 
     <color name="background_dark">#FF121212</color>

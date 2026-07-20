@@ -3,12 +3,35 @@ package com.mpdplayer
 import android.content.Context
 import android.net.Uri
 import java.io.BufferedReader
+import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.InputStream
 import java.io.InputStreamReader
 import java.net.URL
+import java.security.MessageDigest
 
 object PlaylistParser {
+
+    // Cache M3U files locally so repeated launches are instant (skip network).
+    // The TTL is deliberately long — M3U playlists rarely change minute-to-minute.
+    private const val M3U_CACHE_TTL_MS = 30 * 60 * 1000L // 30 minutes
+
+    private fun cacheDir(context: Context) = java.io.File(context.cacheDir, "m3u_cache").also { it.mkdirs() }
+    private fun cacheKey(url: String): String {
+        val digest = MessageDigest.getInstance("MD5").digest(url.toByteArray())
+        return digest.joinToString("") { "%02x".format(it) } + ".m3u"
+    }
+    private fun readCached(url: String, context: Context): String? {
+        val file = java.io.File(cacheDir(context), cacheKey(url))
+        if (!file.exists()) return null
+        val age = System.currentTimeMillis() - file.lastModified()
+        if (age > M3U_CACHE_TTL_MS) { file.delete(); return null }
+        return try { file.readText(Charsets.UTF_8) } catch (e: Exception) { null }
+    }
+    private fun writeCache(url: String, content: String, context: Context) {
+        try { java.io.File(cacheDir(context), cacheKey(url)).writeText(content, Charsets.UTF_8) }
+        catch (e: Exception) { /* cache write failure is non-fatal */ }
+    }
 
     // Precompiled regexes — compiling per line for every #EXTINF/#EXTM3U entry
     // is a major cost on large playlists, so compile once at class load.
@@ -64,13 +87,27 @@ object PlaylistParser {
         Thread {
             try {
                 val channels = mutableListOf<Channel>()
-                val inputStream: InputStream = when {
-                    playlistUrl.startsWith("http") -> URL(playlistUrl).openStream()
-                    playlistUrl.startsWith("content://") -> context.contentResolver.openInputStream(Uri.parse(playlistUrl))!!
-                    else -> File(playlistUrl).inputStream()
+                
+                // Try local M3U cache first (avoids network on every launch).
+                // If the raw M3U is fresh enough, parse it from the cached copy.
+                var rawM3u: String? = null
+                if (playlistUrl.startsWith("http")) {
+                    rawM3u = readCached(playlistUrl, context)
+                }
+                if (rawM3u == null) {
+                    // No cache — download.
+                    val inputStream: InputStream = when {
+                        playlistUrl.startsWith("http") -> URL(playlistUrl).openStream()
+                        playlistUrl.startsWith("content://") -> context.contentResolver.openInputStream(Uri.parse(playlistUrl))!!
+                        else -> File(playlistUrl).inputStream()
+                    }
+                    rawM3u = inputStream.bufferedReader(Charsets.UTF_8).readText()
+                    inputStream.close()
+                    // Persist so the next launch is instant.
+                    if (playlistUrl.startsWith("http")) writeCache(playlistUrl, rawM3u, context)
                 }
                 
-                val reader = BufferedReader(InputStreamReader(inputStream, "UTF-8"))
+                val reader = BufferedReader(InputStreamReader(ByteArrayInputStream(rawM3u.toByteArray(Charsets.UTF_8)), "UTF-8"))
 
                 var currentName = ""
                 var currentLogo = ""

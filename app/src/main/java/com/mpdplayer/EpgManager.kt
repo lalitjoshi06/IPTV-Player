@@ -99,6 +99,13 @@ object EpgManager {
         }
     }
 
+    fun clearAll() {
+        synchronized(epgSourceData) {
+            epgSourceData.clear()
+        }
+        mainHandler.post { listeners.forEach { it() } }
+    }
+
     fun addListener(l: () -> Unit) = listeners.add(l)
     fun removeListener(l: () -> Unit) = listeners.remove(l)
 }

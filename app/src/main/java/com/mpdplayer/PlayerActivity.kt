@@ -31,6 +31,9 @@ import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.trackselection.AdaptiveTrackSelection
+import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
+import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
 import androidx.media3.ui.PlayerView
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
@@ -92,7 +95,8 @@ class PlayerActivity : AppCompatActivity() {
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private var retryCount = 0
-    private val maxRetries = 3
+    private var retriedCurrentSource = false
+    private val maxRetries = 6
     private var errorRecoveryScheduled = false
 
     @Volatile
@@ -342,6 +346,18 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun playChannel(mpdUrl: String, licenseUrl: String, drmType: String = currentDrmType, startPos: Long = 0) {
+        // Reset the retry counter only when we are genuinely changing to a
+        // different stream. This prevents the infinite retry loop on a flaky
+        // channel (which leaked memory until OOM) while still allowing a fresh
+        // attempt when the user picks another channel. NOTE: do NOT reset
+        // currentSourceIndex here — the error-recovery handler and source
+        // switcher set it explicitly before calling; resetting it would make
+        // source switching oscillate between the first two sources and never
+        // reach later ones.
+        if (mpdUrl != currentMpdUrl || licenseUrl != currentLicenseUrl) {
+            retryCount = 0
+            retriedCurrentSource = false
+        }
         currentMpdUrl = mpdUrl
         currentLicenseUrl = licenseUrl
         currentDrmType = drmType
@@ -435,7 +451,11 @@ class PlayerActivity : AppCompatActivity() {
             bufferingBar.visibility = View.GONE
             if (playbackState == Player.STATE_READY) bufferPercentage.visibility = View.GONE
             if (playbackState == Player.STATE_READY) {
-                retryCount = 0
+                // NOTE: do NOT reset retryCount here. A flaky stream can reach
+                // STATE_READY briefly between errors; resetting here let the
+                // per-error retry loop run forever, each retry rebuilding the
+                // MediaSource/OkHttp stack and leaking native+Java memory until
+                // the process hit the 128MB heap cap and aborted (OOM/SIGABRT).
                 bufferPercentage.visibility = View.GONE
                 hideErrorOverlay()
                 savePreferredSource(currentMpdUrl)
@@ -449,26 +469,45 @@ class PlayerActivity : AppCompatActivity() {
             showErrorForPlaybackException(error)
 
             val channel = currentChannel
-            if (retryCount < 1) {
+            val isDrmError = error.errorCode == PlaybackException.ERROR_CODE_DRM_LICENSE_ACQUISITION_FAILED
+            // Classify the error to decide recovery strategy:
+            //  - Source failure (bad HTTP status, 404, permission denied) →
+            //    source is definitively bad, switch to the next source immediately.
+            //  - Playback error / source not reachable (timeout, DNS failure,
+            //    connection refused, generic IO) → transient network issue,
+            //    retry the SAME source once, then switch to next source.
+            //  - DRM error → retry the SAME source once, then switch.
+            val isSourceFailure = !isDrmError && when (error.errorCode) {
+                PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS,
+                PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND,
+                PlaybackException.ERROR_CODE_IO_NO_PERMISSION -> true
+                else -> false
+            }
+            // Retry once for transient / DRM errors. Source failures skip the
+            // retry and go straight to the next source.
+            val shouldRetryFirst = !isSourceFailure
+
+            if (retryCount < maxRetries) {
                 retryCount++
                 errorRecoveryScheduled = true
+                val backoff = (2000L * retryCount).coerceAtMost(8000L)
                 mainHandler.postDelayed({
                     errorRecoveryScheduled = false
-                    playChannel(currentMpdUrl, currentLicenseUrl, currentDrmType)
-                }, 500)
-            } else if (channel != null && currentSourceIndex + 1 < channel.sources.size) {
-                errorRecoveryScheduled = true
-                currentSourceIndex++
-                val nextSource = channel.sources[currentSourceIndex]
-                mainHandler.post {
-                    Toast.makeText(this@PlayerActivity, "Source failed. Switching...", Toast.LENGTH_SHORT).show()
-                    playChannel(nextSource.url, nextSource.licenseUrl, nextSource.drmType)
-                    errorRecoveryScheduled = false
-                }
-            } else if (retryCount < maxRetries) {
-                retryCount++
-                val pos = player?.currentPosition ?: 0
-                playChannel(currentMpdUrl, currentLicenseUrl, currentDrmType, pos)
+
+                    if (shouldRetryFirst && !retriedCurrentSource) {
+                        retriedCurrentSource = true
+                        val msg = if (isDrmError) "DRM error. Retrying…" else "Playback error. Retrying…"
+                        Toast.makeText(this@PlayerActivity, msg, Toast.LENGTH_SHORT).show()
+                        playChannel(currentMpdUrl, currentLicenseUrl, currentDrmType)
+                    } else {
+                        retriedCurrentSource = false
+                        val sourceCount = (channel?.sources?.size ?: 1).coerceAtLeast(1)
+                        currentSourceIndex = (currentSourceIndex + 1) % sourceCount
+                        val nextSource = channel!!.sources[currentSourceIndex]
+                        Toast.makeText(this@PlayerActivity, "Source failed. Switching…", Toast.LENGTH_SHORT).show()
+                        playChannel(nextSource.url, nextSource.licenseUrl, nextSource.drmType)
+                    }
+                }, backoff)
             } else {
                 runOnUiThread { Toast.makeText(this@PlayerActivity, "Playback failed", Toast.LENGTH_LONG).show() }
             }
@@ -484,17 +523,37 @@ class PlayerActivity : AppCompatActivity() {
      */
     private fun ensurePlayer() {
         if (player != null) return
+        // Keep buffers SMALL. This device is memory-constrained and the low-memory
+        // killer fires at the min watermark (~143MB RSS). Larger buffers make ExoPlayer
+        // retain more native codec/segment buffers, growing native heap and triggering
+        // an OOM kill (app dies, returns to home). Smaller buffers trade a little
+        // rebuffer resilience for staying alive.
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
-                15000,  // min buffer
-                40000,  // max buffer
-                700,    // buffer for playback (fast, near-instant start)
-                1200    // buffer for rebuffering (fast key-rotation recovery)
+                10000,  // min buffer
+                25000,  // max buffer (Cap native memory)
+                1500,   // buffer for playback (Increased for stability)
+                3000    // buffer for rebuffering (Increased for stability)
             )
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()
 
+        // Start adaptive playback at the highest available quality and step down
+        // only when bandwidth drops. The high initial bitrate estimate makes the
+        // adaptive selector pick the top tier first.
+        val bandwidthMeter = DefaultBandwidthMeter.Builder(this)
+            .setInitialBitrateEstimate(20_000_000L)
+            .build()
+        val trackSelectionFactory = AdaptiveTrackSelection.Factory()
+        val trackSelector = DefaultTrackSelector(this, trackSelectionFactory)
+        trackSelector.parameters = trackSelector.parameters.buildUpon()
+            .setAllowVideoMixedMimeTypeAdaptiveness(true)
+            .setAllowVideoNonSeamlessAdaptiveness(true)
+            .build()
+
         player = ExoPlayer.Builder(this)
+            .setTrackSelector(trackSelector)
+            .setBandwidthMeter(bandwidthMeter)
             .setMediaSourceFactory(
                 DefaultMediaSourceFactory(dataSourceFactory)
                     .setDrmSessionManagerProvider { mediaItem -> buildDrmSessionManager(mediaItem) }
@@ -1135,6 +1194,12 @@ class PlayerActivity : AppCompatActivity() {
     override fun onPause() {
         super.onPause()
         player?.pause()
+    }
+
+    override fun onLowMemory() {
+        super.onLowMemory()
+        Log.w("PlayerActivity", "Low memory detected! Clearing EPG data.")
+        EpgManager.clearAll()
     }
 
     override fun onDestroy() {

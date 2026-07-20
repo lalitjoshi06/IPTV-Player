@@ -100,17 +100,19 @@ object EpgParser {
      * Control characters inside text fields are replaced with spaces to stay safe.
      */
     private fun writeParsedCache(file: File, map: Map<String, EpgData>) {
+        val now = System.currentTimeMillis() / 1000
         file.bufferedWriter().use { w ->
             w.write(map.size.toString()); w.append('\n')
             for ((key, data) in map) {
                 val safeKey = key.replace(FS, ' ').replace('\n', ' ')
-                w.write(safeKey); w.append(FS); w.write(data.programs.size.toString()); w.append('\n')
-                for (p in data.programs) {
+                // Memory Optimization: Filter old programs before writing to cache
+                val futureProgs = data.programs.filter { it.stop >= now }.take(5)
+                
+                w.write(safeKey); w.append(FS); w.write(futureProgs.size.toString()); w.append('\n')
+                for (p in futureProgs) {
                     w.write(p.start.toString()); w.append(FS)
                     w.write(p.stop.toString()); w.append(FS)
-                    w.write(p.title.replace(FS, ' ').replace('\n', ' ')); w.append(FS)
-                    w.write(p.description.replace(FS, ' ').replace('\n', ' ')); w.append(FS)
-                    w.write(p.category.replace(FS, ' ').replace('\n', ' ')); w.append('\n')
+                    w.write(p.title.replace(FS, ' ').replace('\n', ' ')); w.append('\n')
                 }
             }
         }
@@ -118,28 +120,52 @@ object EpgParser {
 
     private fun readParsedCache(file: File): Map<String, EpgData>? {
         val result = mutableMapOf<String, EpgData>()
-        file.bufferedReader().useLines { seq ->
-            val iter = seq.iterator()
-            if (!iter.hasNext()) return null
-            val count = iter.next().toIntOrNull() ?: return null
-            repeat(count) {
-                if (!iter.hasNext()) return@repeat
-                val header = iter.next().split(FS)
-                if (header.size < 2) return@repeat
-                val key = header[0]
-                val progCount = header[1].toIntOrNull() ?: 0
-                val programs = mutableListOf<EpgProgram>()
-                repeat(progCount) {
-                    if (!iter.hasNext()) return@repeat
-                    val f = iter.next().split(FS)
-                    if (f.size >= 5) {
-                        val start = f[0].toLongOrNull() ?: 0L
-                        val stop = f[1].toLongOrNull() ?: 0L
-                        programs.add(EpgProgram(f[2], start, stop, f[3], f[4]))
+        val now = System.currentTimeMillis() / 1000
+        try {
+            file.bufferedReader().use { reader ->
+                val countStr = reader.readLine() ?: return null
+                val count = countStr.toIntOrNull() ?: return null
+                
+                repeat(count) {
+                    val headerLine = reader.readLine() ?: return@repeat
+                    val fsIndex = headerLine.indexOf(FS)
+                    if (fsIndex == -1) return@repeat
+                    
+                    val key = headerLine.substring(0, fsIndex)
+                    val progCount = headerLine.substring(fsIndex + 1).toIntOrNull() ?: 0
+                    
+                    val programs = ArrayList<EpgProgram>(progCount)
+                    repeat(progCount) {
+                        val line = reader.readLine() ?: return@repeat
+                        
+                        // Optimized parsing without split()
+                        var current = 0
+                        var next = line.indexOf(FS, current)
+                        if (next == -1) return@repeat
+                        val start = line.substring(current, next).toLongOrNull() ?: 0L
+                        
+                        current = next + 1
+                        next = line.indexOf(FS, current)
+                        if (next == -1) return@repeat
+                        val stop = line.substring(current, next).toLongOrNull() ?: 0L
+                        
+                        current = next + 1
+                        next = line.indexOf(FS, current)
+                        val title = if (next != -1) line.substring(current, next) else line.substring(current)
+                        
+                        if (stop >= now) {
+                            programs.add(EpgProgram(title, start, stop, "", ""))
+                        }
+                    }
+                    if (programs.isNotEmpty()) {
+                        result[key] = EpgData(key, programs)
                     }
                 }
-                if (programs.isNotEmpty()) result[key] = EpgData(key, programs)
             }
+        } catch (e: Exception) {
+            Log.e("EpgParser", "Error reading parsed cache: ${e.message}")
+            file.delete()
+            return null
         }
         return if (result.isNotEmpty()) result else null
     }
@@ -204,14 +230,24 @@ object EpgParser {
     private fun buildEpgDataByTvgId(channelMap: Map<String, EpgChannelMap>, programsRaw: List<ProgrammeRaw>): Map<String, EpgData> {
         val result = mutableMapOf<String, EpgData>()
         val byChannel = programsRaw.groupBy { it.channel }
+        val now = System.currentTimeMillis() / 1000
         Log.d("EpgParser", "Building EPG Map. Programs: ${programsRaw.size}, Channels: ${channelMap.size}")
+
+        // Normalization helper: lowercase, remove non-alphanumeric
+        fun normalize(s: String) = s.lowercase().replace(Regex("[^a-z0-9]"), "").trim()
 
         for ((epgId, progs) in byChannel) {
             val programs = progs.mapNotNull { raw ->
                 val startTs = parseXmltvTime(raw.start) ?: return@mapNotNull null
                 val stopTs = parseXmltvTime(raw.stop) ?: return@mapNotNull null
-                EpgProgram(raw.title, startTs, stopTs, raw.description, raw.category)
+                
+                // Memory Optimization: Skip programs that have already ended
+                if (stopTs < now) return@mapNotNull null
+                
+                // Memory Optimization: Discard description and category (not used in UI)
+                EpgProgram(raw.title, startTs, stopTs, "", "")
             }.sortedBy { it.start }
+             .take(5) // Memory Optimization: Only keep current + next 4 programs
 
             if (programs.isEmpty()) continue
             val data = EpgData(epgId, programs)
@@ -220,20 +256,26 @@ object EpgParser {
             val key = epgId.lowercase().trim()
             result[key] = data
             
-            // 2. EXTRA: If XML ID is like "ts840", also map "840"
+            // 2. Map normalized version of the epgId
+            val normId = normalize(key)
+            if (normId.isNotEmpty() && result[normId] == null) {
+                result[normId] = data
+            }
+            
+            // 3. EXTRA: If XML ID is like "ts840", also map "840"
             val digits = key.filter { it.isDigit() }
             if (digits.isNotEmpty() && digits != key && digits.length > 1) {
                 if (result[digits] == null) result[digits] = data
             }
             
-            // 3. Map all display names for this channel ID
+            // 4. Map all display names for this channel ID
             channelMap[epgId]?.displayNames?.forEach { name ->
                 val clean = name.lowercase().trim()
                 if (clean.isNotEmpty()) {
                     if (result[clean] == null) result[clean] = data
                     
-                    // Fuzzy match (ignore HD/SD)
-                    val fuzzy = clean.replace("hd", "").replace("sd", "").replace("india", "").trim()
+                    // Fuzzy match (ignore HD/SD and special chars)
+                    val fuzzy = normalize(clean).replace("hd", "").replace("sd", "").replace("india", "")
                     if (fuzzy.isNotEmpty() && fuzzy.length > 2 && result[fuzzy] == null) {
                         result[fuzzy] = data
                     }
