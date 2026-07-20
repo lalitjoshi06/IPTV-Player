@@ -769,8 +769,11 @@ class PlayerActivity : AppCompatActivity() {
         }
         
         val favorites = getFavoritesList()
-        val key = if (channel != null) Channel.favoriteKey(channel) else currentTvgId.ifBlank { currentName }
-        infoBtnFav.setImageResource(if (favorites.contains(key)) android.R.drawable.btn_star_big_on else android.R.drawable.btn_star_big_off)
+        val key = if (channel != null) Channel.favoriteKey(channel) else Channel.favoriteKey(currentTvgId, currentName, "")
+        val oldKey = currentTvgId.ifBlank { currentName }
+        val isFav = favorites.contains(key) || (oldKey != key && favorites.contains(oldKey))
+        
+        infoBtnFav.setImageResource(if (isFav) android.R.drawable.btn_star_big_on else android.R.drawable.btn_star_big_off)
         
         currentChannel?.let { 
             btnSource.visibility = if (it.sources.size > 1) View.VISIBLE else View.GONE 
@@ -980,10 +983,22 @@ class PlayerActivity : AppCompatActivity() {
         val favorites = getFavoritesList()
         val key = Channel.favoriteKey(channel)
         val oldKey = channel.tvgId.ifBlank { channel.name }
-        if (oldKey != key) favorites.remove(oldKey)
-        if (favorites.contains(key)) favorites.remove(key) else favorites.add(key)
+        
+        val wasFav = favorites.contains(key) || (oldKey != key && favorites.contains(oldKey))
+        
+        if (wasFav) {
+            favorites.remove(key)
+            if (oldKey != key) favorites.remove(oldKey)
+        } else {
+            favorites.add(key)
+        }
+
         prefs.edit().putString("favorites_list", MainActivity.gson.toJson(favorites)).apply()
         updateInfoBarUI()
+        
+        // Reset auto-hide timer so user can see the updated star icon
+        mainHandler.removeCallbacks(hideInfoBarRunnable)
+        mainHandler.postDelayed(hideInfoBarRunnable, 4000)
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
@@ -1037,6 +1052,8 @@ class PlayerActivity : AppCompatActivity() {
                     return super.onKeyDown(keyCode, event)
                 }
                 KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
+                    mainHandler.removeCallbacks(hideInfoBarRunnable)
+                    mainHandler.postDelayed(hideInfoBarRunnable, 4000)
                     return super.onKeyDown(keyCode, event)
                 }
                 KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_ESCAPE -> {

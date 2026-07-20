@@ -87,21 +87,41 @@ class CategoryActivity : AppCompatActivity() {
         val favorites = getFavorites()
         val key = Channel.favoriteKey(channel)
         val oldKey = channel.tvgId.ifBlank { channel.name }
-        if (oldKey != key) favorites.remove(oldKey)
-        if (favorites.contains(key)) {
+        
+        val wasFav = favorites.contains(key) || (oldKey != key && favorites.contains(oldKey))
+        
+        if (wasFav) {
             favorites.remove(key)
-            if (categoryName == "FAVORITES") {
-                val idx = channels.indexOf(channel)
-                if (idx >= 0) {
-                    channels.removeAt(idx)
-                    adapter.notifyItemRemoved(idx)
-                }
-            }
+            if (oldKey != key) favorites.remove(oldKey)
         } else {
             favorites.add(key)
         }
         saveFavorites(favorites)
-        adapter.notifyDataSetChanged()
+        
+        // Instantly insert/remove from list so user sees the result without waiting
+        if (categoryName == "FAVORITES") {
+            val idx = channels.indexOf(channel)
+            if (wasFav) {
+                if (idx >= 0) {
+                    channels.removeAt(idx)
+                    adapter.notifyItemRemoved(idx)
+                }
+            } else {
+                if (idx < 0) {
+                    channels.add(0, channel)
+                    adapter.notifyItemInserted(0)
+                }
+            }
+        }
+        // Just refresh this channel's star icon — no notifyDataSetChanged on entire list
+        val myIdx = channels.indexOf(channel)
+        if (myIdx >= 0) {
+            val holder = channelList.findViewHolderForAdapterPosition(myIdx) as? ChannelAdapter.ViewHolder
+            if (holder != null) {
+                val isFavNow = getFavorites().contains(key)
+                holder.btnFav.setImageResource(if (isFavNow) android.R.drawable.btn_star_big_on else android.R.drawable.btn_star_big_off)
+            }
+        }
     }
 
     private fun moveFavorite(fromIndex: Int, toIndex: Int) {
@@ -113,7 +133,7 @@ class CategoryActivity : AppCompatActivity() {
         val newFavOrder = channels.map { Channel.favoriteKey(it) }
         saveFavorites(newFavOrder)
         
-        adapter.notifyDataSetChanged()
+        adapter.notifyItemMoved(fromIndex, toIndex)
         
         // Re-open the dialog at the NEW position to allow continuous moving
         channelList.post {

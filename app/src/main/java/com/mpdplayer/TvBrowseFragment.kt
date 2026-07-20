@@ -79,10 +79,6 @@ class TvBrowseFragment : BrowseSupportFragment() {
     private fun mergeChannels(newList: List<Channel>) {
         synchronized(allChannels) {
             newList.forEach { newCh ->
-                // Merge strictly by exact name (case-insensitive). tvg-id is NOT used:
-                // it is not globally unique across providers (e.g. one provider's
-                // News24 and another's Z Marathi can share a tvg-id), so matching by
-                // tvg-id wrongly glued unrelated channels together.
                 val existing = allChannels.find { it.name.trim().equals(newCh.name.trim(), true) }
                 if (existing != null) {
                     newCh.sources.forEach { s -> if (existing.sources.none { it.url == s.url }) existing.sources.add(s) }
@@ -104,65 +100,80 @@ class TvBrowseFragment : BrowseSupportFragment() {
         }
     }
 
-    private fun getFavoritesPrefs(): Set<String> {
+    private fun getFavoritesList(): MutableList<String> {
         val prefs = requireContext().getSharedPreferences("mpd_player_prefs", Context.MODE_PRIVATE)
-        return prefs.getStringSet("favorites", emptySet()) ?: emptySet()
+        val json = prefs.getString("favorites_list", "[]") ?: "[]"
+        return try {
+            Gson().fromJson(json, object : TypeToken<MutableList<String>>() {}.type)
+        } catch (e: Exception) {
+            mutableListOf()
+        }
+    }
+
+    private fun saveFavoritesList(list: List<String>) {
+        val prefs = requireContext().getSharedPreferences("mpd_player_prefs", Context.MODE_PRIVATE)
+        prefs.edit().putString("favorites_list", Gson().toJson(list)).apply()
     }
 
     fun toggleFavoriteForSelected() {
         val channel = selectedChannel ?: return
-        val prefs = requireContext().getSharedPreferences("mpd_player_prefs", Context.MODE_PRIVATE)
-        val favs = getFavoritesPrefs().toMutableSet()
+        val favorites = getFavoritesList()
         val key = Channel.favoriteKey(channel)
         val oldKey = channel.tvgId.ifBlank { channel.name }
-        if (oldKey != key) favs.remove(oldKey)
         
-        if (favs.contains(key)) {
-            favs.remove(key)
+        val wasFav = favorites.contains(key) || (oldKey != key && favorites.contains(oldKey))
+        
+        if (wasFav) {
+            favorites.remove(key)
+            if (oldKey != key) favorites.remove(oldKey)
             Toast.makeText(requireContext(), "Removed from Favorites", Toast.LENGTH_SHORT).show()
         } else {
-            favs.add(key)
+            favorites.add(key)
             Toast.makeText(requireContext(), "Added to Favorites", Toast.LENGTH_SHORT).show()
         }
-        prefs.edit().putStringSet("favorites", favs).apply()
+        saveFavoritesList(favorites)
         setupAdapter()
     }
 
     @UnstableApi
     private fun setupAdapter() {
         val rowsAdapter = ArrayObjectAdapter(ListRowPresenter())
-        val favorites = getFavoritesPrefs()
+        val favorites = getFavoritesList()
 
-        val favList = Channel.resolveFavorites(favorites.toList(), allChannels)
-        if (favList.isNotEmpty()) {
-            rowsAdapter.add(ListRow(HeaderItem("★ FAVORITES"), createChannelAdapter(favList)))
-        }
+        if (allChannels.isNotEmpty()) {
+            val favList = Channel.resolveFavorites(favorites, allChannels)
+            if (favList.isNotEmpty()) {
+                rowsAdapter.add(ListRow(HeaderItem("★ FAVORITES"), createChannelAdapter(favList)))
+            }
 
-        val grouped = allChannels.groupBy { it.group.ifBlank { "Other" } }
-        for ((groupName, groupChannels) in grouped) {
-            rowsAdapter.add(ListRow(HeaderItem(groupName), createChannelAdapter(groupChannels)))
+            val grouped = allChannels.groupBy { it.group.ifBlank { "Other" } }
+            for ((groupName, groupChannels) in grouped) {
+                rowsAdapter.add(ListRow(HeaderItem(groupName), createChannelAdapter(groupChannels)))
+            }
         }
 
         adapter = rowsAdapter
 
-        setOnItemViewClickedListener { _, item, _, _ ->
-            if (item is Channel) {
-                val isFavorite = getFavoritesPrefs().contains(Channel.favoriteKey(item))
-                startActivity(Intent(requireContext(), PlayerActivity::class.java).apply {
-                    putExtra("channelName", item.name)
-                    putExtra("mpdUrl", item.mpdUrl)
-                    putExtra("licenseUrl", item.licenseUrl)
-                    putExtra("drmType", item.drmType)
-                    putExtra("channelTvgId", item.tvgId)
-                    putExtra("epgUrls", epgUrls.toTypedArray())
-                    putExtra("categoryName", if (isFavorite) "FAVORITES" else item.group)
-                    putExtra("channelsJson", Gson().toJson(allChannels))
-                })
+        if (allChannels.isNotEmpty()) {
+            setOnItemViewClickedListener { _, item, _, _ ->
+                if (item is Channel) {
+                    val isFavorite = getFavoritesList().contains(Channel.favoriteKey(item))
+                    startActivity(Intent(requireContext(), PlayerActivity::class.java).apply {
+                        putExtra("channelName", item.name)
+                        putExtra("mpdUrl", item.mpdUrl)
+                        putExtra("licenseUrl", item.licenseUrl)
+                        putExtra("drmType", item.drmType)
+                        putExtra("channelTvgId", item.tvgId)
+                        putExtra("epgUrls", epgUrls.toTypedArray())
+                        putExtra("categoryName", if (isFavorite) "FAVORITES" else item.group)
+                        putExtra("channelsJson", Gson().toJson(allChannels))
+                    })
+                }
             }
-        }
 
-        setOnItemViewSelectedListener { _, item, _, _ ->
-            if (item is Channel) selectedChannel = item
+            setOnItemViewSelectedListener { _, item, _, _ ->
+                if (item is Channel) selectedChannel = item
+            }
         }
 
         startEntranceTransition()

@@ -31,42 +31,151 @@ data class Channel(
     }
 
     companion object {
-        /** Generate a unique, stable favorite key — prefers tvgId, falls back to normalized name. */
-        fun favoriteKey(tvgId: String, name: String, playlistName: String): String {
-            if (tvgId.isNotBlank()) return tvgId.trim().lowercase()
-            // Normalize name: lowercase and remove all non-alphanumeric characters
+        fun normalizedName(name: String): String {
             return name.lowercase().replace(Regex("[^a-z0-9]"), "")
+        }
+
+        /** Generate a unique, stable favorite key using normalized name as the anchor.
+         *  Prepend tvgId prefix when available so keys with same tvgId but different names are distinct.
+         *  When no tvgId, use purely name-based key that never changes regardless of playlist/source changes. */
+        fun favoriteKey(tvgId: String, name: String, playlistName: String): String {
+            val norm = normalizedName(name)
+            return if (tvgId.isNotBlank()) "tk:${tvgId.trim().lowercase()}:n:$norm" else "nk:$norm"
         }
 
         fun favoriteKey(channel: Channel): String {
             return favoriteKey(channel.tvgId, channel.name, "")
         }
 
-        /** Normalize a channel name for cross-playlist matching: lowercase and strip all non-alphanumeric characters. */
-        fun normalizedName(name: String): String {
-            return name.lowercase().replace(Regex("[^a-z0-9]"), "")
-        }
-
-        /** Resolve a list of favorite keys to Channel objects. Checks tvgId first, then all composite keys (playlist::name), then name, then altIds. Preserves input order. */
+        /** Resolve stored favorite keys to actual Channel objects.
+         *  Builds multiple index maps from allChannels keyed by ALL possible representations,
+         *  then for each stored key tries every strategy to find a matching channel.
+         *  Works with old formats (plain tvgId, name::channel, composite) AND new dual-format keys. */
         fun resolveFavorites(keys: List<String>, allChannels: List<Channel>): List<Channel> {
-            val index = mutableMapOf<String, Channel>()
-            allChannels.forEach { ch ->
-                val tvg = ch.tvgId.trim().lowercase()
-                if (tvg.isNotEmpty()) index.putIfAbsent(tvg, ch)
+            // Build lookup maps from channels
+            val byExactKey = HashMap<String, Channel>()   // "tk:...","src:...::...", raw names
+            val byNormalizedName = LinkedHashMap<String, Channel>()  // normalized name -> channel
+            val byRawTvgId = HashMap<String, Channel>()    // plain lowercase tvgId
+            val byAltId = HashMap<String, Channel>()       // all altIds
+            
+            for (ch in allChannels) {
+                val norm = normalizedName(ch.name)
                 
-                // Index ALL possible composite keys for this channel so favorites are stable 
-                // regardless of which source is currently "first" after filtering/merging.
-                ch.sources.forEach { src ->
-                    val compositeKey = "${src.playlistName}::${ch.name.trim()}".lowercase()
-                    index.putIfAbsent(compositeKey, ch)
+                // tvgId indexed under multiple formats
+                if (ch.tvgId.isNotBlank()) {
+                    val tvgLower = ch.tvgId.trim().lowercase()
+                    byRawTvgId[tvgLower] = ch
+                    byExactKey["tk:$tvgLower:n:$norm"] = ch
+                }
+                
+                // Composite keys: src::playlistName::channelName (all lowercase)
+                for (src in ch.sources) {
+                    val composite = "src:${src.playlistName.lowercase()}:${ch.name.trim().lowercase()}"
+                    byExactKey[composite] = ch
+                }
+                
+                // Raw lowercase name
+                val rawLower = ch.name.trim().lowercase()
+                byExactKey[rawLower] = ch
+                
+                // Normalized names (both raw and prefixed)
+                if (norm.isNotEmpty()) {
+                    byNormalizedName.putIfAbsent(norm, ch)
+                    byExactKey["nk:$norm"] = ch
+                }
+                
+                // altIds: both raw and normalized forms
+                for (id in ch.altIds) {
+                    val idClean = id.trim().lowercase()
+                    byAltId[idClean] = ch
+                    val idNorm = normalizedName(id)
+                    if (idNorm.isNotEmpty()) {
+                        byExactKey[idNorm] = ch
+                    }
+                }
+            }
+
+            return keys.mapNotNull { rawKey ->
+                val key = rawKey.trim()
+                if (key.isEmpty()) return@mapNotNull null
+                
+                var result: Channel? = null
+                
+                // Strategy 1: direct lookup in any index
+                if (result == null) result = byExactKey[key]
+                if (result == null) result = byNormalizedName[key]
+                if (result == null) result = byRawTvgId[key]
+                if (result == null) result = byAltId[key]
+                
+                // Strategy 2: parse composite key format "tk:xxx:n:yyy" or "nk:yyy"
+                if (result == null && ':' in key) {
+                    val parts = key.split(':')
+                    when {
+                        parts.size >= 4 && parts[0] == "tk" -> {
+                            val tvgCandidate = parts[1]
+                            result = byRawTvgId[tvgCandidate] ?: byNormalizedName[parts[3]]
+                        }
+                        parts.size >= 2 && parts[0] == "nk" -> {
+                            result = byNormalizedName[parts.subList(1, parts.size).joinToString(":")]
+                        }
+                        key.startsWith("src:") || key.startsWith("tk:") || key.startsWith("nk:") -> {
+                            // Unknown composite prefix — try extracting the normalized name part
+                            for (i in parts.indices) {
+                                if (parts[i] == "n" && i + 1 < parts.size) {
+                                    result = byNormalizedName[parts[i + 1]]
+                                    break
+                                }
+                            }
+                        }
+                        else -> {
+                            result = byNormalizedName[parts.joinToString("").replace(Regex("[^a-z0-9]"), "")]
+                        }
+                    }
+                }
+                
+                // Strategy 3: handle old dual-format keys stored as "tvgId|normalizedName" 
+                if (result == null && '|' in key) {
+                    val parts = key.split('|')
+                    for (part in parts) {
+                        val p = part.trim()
+                        if (p.isEmpty()) continue
+                        if (result == null) result = byRawTvgId[p]
+                        if (result == null) result = byNormalizedName[p]
+                        if (result == null) result = byAltId[p] ?: byExactKey[p]
+                    }
+                }
+                
+                // Strategy 4: extract normalized name from any key format
+                if (result == null) {
+                    val normCandidate = normalizedName(key)
+                    if (normCandidate.isNotEmpty()) result = byNormalizedName[normCandidate]
+                }
+                
+                // Strategy 5: iterate all channels and check if stored key matches any representation
+                if (result == null) {
+                    for ((k, c) in byRawTvgId) {
+                        if (key.contains(k)) { result = c; break }
+                    }
+                }
+                
+                // Strategy 6: plain substring match against normalized names 
+                if (result == null) {
+                    val strippedKey = key.replace(Regex("[^a-z0-9]"), "")
+                    if (strippedKey.length >= 4) {
+                        for ((norm, c) in byNormalizedName) {
+                            if (norm.contains(strippedKey) && norm.length >= 6) { result = c; break }
+                        }
+                    }
                 }
 
-                index.putIfAbsent(ch.name.trim().lowercase(), ch)
-                ch.altIds.forEach { id -> index.putIfAbsent(id.trim().lowercase(), ch) }
-            }
-            return keys.mapNotNull { key ->
-                val k = key.trim().lowercase()
-                if (k.isEmpty()) null else index[k]
+                result ?: allChannels.find { 
+                    it.tvgId.equals(key.trim(), ignoreCase = true)
+                        || normalizedName(it.name) == key.replace(Regex("[^a-z0-9]"), "")
+                }
+            }.let { 
+                // Deduplicate preserving order (important for old dual-format keys resolving to same channel)
+                val seen = linkedSetOf<String>()
+                it.filter { ch -> seen.add(ch.name) } 
             }
         }
     }

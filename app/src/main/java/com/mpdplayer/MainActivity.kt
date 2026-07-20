@@ -90,8 +90,11 @@ class MainActivity : AppCompatActivity() {
         btnSearch.setOnClickListener { showSearchDialog() }
 
         loadFromCache()
-        val cacheExisted = allChannels.isNotEmpty()
-        loadAllPlaylists(silent = cacheExisted, refreshEpg = true)
+        if (allChannels.isNotEmpty()) {
+            refreshEpg()
+        } else {
+            loadAllPlaylists(silent = false, refreshEpg = true)
+        }
     }
 
     private fun refreshEpg() {
@@ -114,38 +117,53 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun loadFromCache() {
-        Thread {
-            try {
-                val json = readChannelCacheFile() ?: return@Thread
-                val cached: List<Channel> = gson.fromJson(json, object : TypeToken<List<Channel>>() {}.type)
-                val activeNames = getCachedPlaylists().filter { it.isActive }.map { it.name }.toSet()
-
-                val filteredChannels = cached.mapNotNull { ch ->
-                    val activeSources = ch.sources.filter { it.playlistName in activeNames }
-                    if (activeSources.isNotEmpty()) {
-                        ch.sources.clear()
-                        ch.sources.addAll(activeSources)
-                        ch
-                    } else null
-                }
-
-                val prefs = getSharedPreferences("mpd_player_prefs", Context.MODE_PRIVATE)
-                val epgMapJson = prefs.getString("cached_epg_playlist_map", "{}")
-                val type = object : TypeToken<Map<String, Set<String>>>() {}.type
-                val epgMap: Map<String, Set<String>> = try { gson.fromJson(epgMapJson, type) } catch(e: Exception) { emptyMap() }
-
-                mainHandler.post {
-                    allChannels.clear()
-                    allChannels.addAll(filteredChannels)
-                    EpgManager.setPlaylistEpgMap(epgMap)
-                    epgUrls.clear()
-                    activeNames.forEach { name -> epgMap[name]?.let { epgUrls.addAll(it) } }
-                    updateCategories()
-                }
-            } catch (e: Exception) {
-                Log.e("MainActivity", "Failed to load cache", e)
+        if (!sAllChannelsList.isNullOrEmpty()) {
+            allChannels.clear()
+            allChannels.addAll(sAllChannelsList!!)
+            val prefs = getSharedPreferences("mpd_player_prefs", Context.MODE_PRIVATE)
+            val epgMapJson = prefs.getString("cached_epg_playlist_map", "{}")
+            val epgMap: Map<String, Set<String>> = try {
+                gson.fromJson(epgMapJson, object : TypeToken<Map<String, Set<String>>>() {}.type)
+            } catch (e: Exception) { emptyMap() }
+            EpgManager.setPlaylistEpgMap(epgMap)
+            epgUrls.clear()
+            getCachedPlaylists().filter { it.isActive }.map { it.name }.forEach { name ->
+                epgMap[name]?.let { epgUrls.addAll(it) }
             }
-        }.start()
+            updateCategories()
+            return
+        }
+        try {
+            val json = readChannelCacheFile() ?: return
+            val cached: List<Channel> = gson.fromJson(json, object : TypeToken<List<Channel>>() {}.type)
+            val activeNames = getCachedPlaylists().filter { it.isActive }.map { it.name }.toSet()
+
+            val filteredChannels = cached.mapNotNull { ch ->
+                val activeSources = ch.sources.filter { it.playlistName in activeNames }
+                if (activeSources.isNotEmpty()) {
+                    ch.sources.clear()
+                    ch.sources.addAll(activeSources)
+                    ch
+                } else null
+            }
+
+            val prefs = getSharedPreferences("mpd_player_prefs", Context.MODE_PRIVATE)
+            val epgMapJson = prefs.getString("cached_epg_playlist_map", "{}")
+            val epgMap: Map<String, Set<String>> = try {
+                gson.fromJson(epgMapJson, object : TypeToken<Map<String, Set<String>>>() {}.type)
+            } catch (e: Exception) { emptyMap() }
+
+            allChannels.clear()
+            allChannels.addAll(filteredChannels)
+            sChannelsJson = json
+            sAllChannelsList = filteredChannels.toList()
+            EpgManager.setPlaylistEpgMap(epgMap)
+            epgUrls.clear()
+            activeNames.forEach { name -> epgMap[name]?.let { epgUrls.addAll(it) } }
+            updateCategories()
+        } catch (e: Exception) {
+            Log.e("MainActivity", "Failed to load cache", e)
+        }
     }
 
     private fun applyActiveFilter() {
@@ -430,31 +448,47 @@ class MainActivity : AppCompatActivity() {
     private fun updateCategories() {
         val currentName = lastSelectedCategoryName
             ?: if (categories.isNotEmpty() && selectedCategoryIndex < categories.size) categories[selectedCategoryIndex].name else ""
-        categories.clear()
+        
         val prefs = getSharedPreferences("mpd_player_prefs", Context.MODE_PRIVATE)
         migrateFavoritesIfNeeded()
-        val favJson = prefs.getString("favorites_list", "[]")
-        val favorites: List<String> = gson.fromJson(favJson, object : TypeToken<List<String>>() {}.type)
+        
+        val newCategories = mutableListOf<CategoryInfo>()
         
         if (allChannels.isEmpty()) {
-            emptyState.visibility = View.VISIBLE
+            mainHandler.post {
+                emptyState.visibility = View.VISIBLE
+            }
             return
         }
-        emptyState.visibility = View.GONE
+        mainHandler.post { emptyState.visibility = View.GONE }
 
-        val favList = Channel.resolveFavorites(favorites, allChannels)
-        if (favList.isNotEmpty()) categories.add(CategoryInfo("FAVORITES", favList))
+        val favJson = prefs.getString("favorites_list", "[]") ?: "[]"
+        val favs: List<String> = gson.fromJson(favJson, object : TypeToken<List<String>>() {}.type)
+        val favList = Channel.resolveFavorites(favs, allChannels)
+        if (favList.isNotEmpty()) newCategories.add(CategoryInfo("FAVORITES", favList))
 
         val grouped = allChannels.groupBy { it.group.ifBlank { "OTHERS" } }
         for ((name, list) in grouped.toSortedMap()) {
-            if (name.uppercase() != "FAVORITES") categories.add(CategoryInfo(name.uppercase(), list))
+            if (name.uppercase() != "FAVORITES") newCategories.add(CategoryInfo(name.uppercase(), list))
         }
         
         channelCount.text = "Total Channels: ${allChannels.size}"
-        categoryAdapter.notifyDataSetChanged()
         
-        val newIdx = if (currentName.isNotEmpty()) categories.indexOfFirst { it.name == currentName } else 0
-        selectCategory(if (newIdx != -1) newIdx else 0)
+        mainHandler.post {
+            if (isFinishing) return@post
+            
+            val changed = categories.size != newCategories.size || 
+                categories.indices.any { i -> categories[i].name != newCategories[i].name }
+            
+            if (changed) {
+                categories.clear()
+                categories.addAll(newCategories)
+                categoryAdapter.notifyDataSetChanged()
+            }
+            
+            val newIdx = if (currentName.isNotEmpty()) categories.indexOfFirst { it.name == currentName } else 0
+            selectCategory(if (newIdx != -1) newIdx else 0)
+        }
     }
 
     private var categorySelectionRunnable: Runnable? = null
@@ -504,16 +538,16 @@ class MainActivity : AppCompatActivity() {
         displayedChannels.addAll(cat.channels)
         channelCount.text = "Total Channels: ${allChannels.size}"
         
+        if (index == oldIndex) return
+        
         mainHandler.post {
             if (isFinishing) return@post
             if (!rvChannels.isComputingLayout) {
                 channelAdapter.notifyDataSetChanged()
-                if (!rvChannels.hasFocus()) {
-                    rvChannels.scrollToPosition(0)
-                }
+                rvChannels.scrollToPosition(0)
             }
             
-            if (oldIndex != index && !rvCategories.isComputingLayout) {
+            if (!rvCategories.isComputingLayout) {
                 for (i in 0 until rvCategories.childCount) {
                     val child = rvCategories.getChildAt(i)
                     val holder = rvCategories.getChildViewHolder(child) as? CategoryAdapter.ViewHolder
@@ -537,53 +571,131 @@ class MainActivity : AppCompatActivity() {
         
         val key = Channel.favoriteKey(channel)
         val oldKey = channel.tvgId.ifBlank { channel.name }
-        if (oldKey != key) favorites.remove(oldKey)
         
-        val isFavoriteGroup = categories.getOrNull(selectedCategoryIndex)?.name == "FAVORITES"
-
-        if (isFavoriteGroup) {
-            if (oldKey != key && favorites.contains(oldKey) && !favorites.contains(key)) {
-                favorites.remove(oldKey)
-                favorites.add(key)
-                prefs.edit().putString("favorites_list", gson.toJson(favorites)).apply()
-            }
-            showFavoriteReorderDialog(channel, key)
-        } else {
-            if (favorites.contains(key)) {
-                favorites.remove(key)
-                Toast.makeText(this, "Removed: ${channel.name}", Toast.LENGTH_SHORT).show()
+        val isCurrentlyFavorite = favorites.contains(key) || (oldKey != key && favorites.contains(oldKey))
+        val isInFavView = categories.getOrNull(selectedCategoryIndex)?.name == "FAVORITES"
+        
+        if (isCurrentlyFavorite) {
+            if (isInFavView) {
+                showFavoriteReorderDialog(channel, key, favorites)
             } else {
-                favorites.add(key)
-                Toast.makeText(this, "Added to Favorites: ${channel.name}", Toast.LENGTH_SHORT).show()
+                favorites.remove(key)
+                if (oldKey != key) favorites.remove(oldKey)
+                prefs.edit().putString("favorites_list", gson.toJson(favorites)).apply()
+                val favIdx = categories.indexOfFirst { it.name == "FAVORITES" }
+                if (favIdx >= 0) {
+                    val favList = Channel.resolveFavorites(favorites, allChannels)
+                    if (favList.isNotEmpty()) {
+                        categories[favIdx] = CategoryInfo("FAVORITES", favList)
+                    } else {
+                        val existing = categories[favIdx].channels.toMutableList()
+                        existing.removeAll { Channel.favoriteKey(it) == key }
+                        categories[favIdx] = CategoryInfo("FAVORITES", existing)
+                    }
+                    categoryAdapter.notifyItemChanged(favIdx)
+                }
+                Toast.makeText(this, "Removed: ${channel.name}", Toast.LENGTH_SHORT).show()
             }
+        } else {
+            favorites.add(key)
             prefs.edit().putString("favorites_list", gson.toJson(favorites)).apply()
-            updateCategories()
+            
+            val favIdx = categories.indexOfFirst { it.name == "FAVORITES" }
+            if (favIdx >= 0) {
+                val favList = Channel.resolveFavorites(favorites, allChannels)
+                if (favList.isNotEmpty()) {
+                    categories[favIdx] = CategoryInfo("FAVORITES", favList)
+                } else {
+                    val existing = categories[favIdx].channels.toMutableList()
+                    if (channel !in existing) existing.add(channel)
+                    categories[favIdx] = CategoryInfo("FAVORITES", existing)
+                }
+                categoryAdapter.notifyItemChanged(favIdx)
+            } else {
+                categories.add(0, CategoryInfo("FAVORITES", listOf(channel)))
+                categoryAdapter.notifyItemInserted(0)
+                if (selectedCategoryIndex >= 0) selectedCategoryIndex++
+            }
+            
+            Toast.makeText(this, "Added to Favorites: ${channel.name}", Toast.LENGTH_SHORT).show()
         }
     }
 
-    private fun showFavoriteReorderDialog(channel: Channel, key: String) {
+    private fun getFavorites(): MutableList<String> {
+        val prefs = getSharedPreferences("mpd_player_prefs", Context.MODE_PRIVATE)
+        val json = prefs.getString("favorites_list", "[]") ?: "[]"
+        return gson.fromJson(json, object : TypeToken<MutableList<String>>() {}.type)
+    }
+
+    private fun showFavoriteReorderDialog(channel: Channel, key: String, favorites: MutableList<String>) {
         val options = arrayOf("Move Up", "Move Down", "Remove from Favorites")
+        var alreadyRemoved = false
+        
+        // Save the actual focused itemView before dialog steals focus
+        var focusedView: View? = null
+        for (i in 0 until rvChannels.childCount) {
+            val child = rvChannels.getChildAt(i)
+            if (child?.isFocusable == true && child.hasFocus()) {
+                focusedView = child
+                break
+            }
+        }
+        
         AlertDialog.Builder(this, androidx.appcompat.R.style.Theme_AppCompat_Dialog_Alert)
             .setTitle(channel.name)
             .setItems(options) { _, which ->
                 when (which) {
                     0 -> {
                         moveFavorite(key, -1)
-                        showFavoriteReorderDialog(channel, key)
+                        showFavoriteReorderDialog(channel, key, favorites)
                     }
                     1 -> {
                         moveFavorite(key, 1)
-                        showFavoriteReorderDialog(channel, key)
+                        showFavoriteReorderDialog(channel, key, favorites)
                     }
                     2 -> {
-                        val prefs = getSharedPreferences("mpd_player_prefs", Context.MODE_PRIVATE)
-                        val favorites: MutableList<String> = gson.fromJson(prefs.getString("favorites_list", "[]"), object : TypeToken<MutableList<String>>() {}.type)
+                        alreadyRemoved = true
                         favorites.remove(key)
                         favorites.remove(channel.tvgId.ifBlank { channel.name })
-                        prefs.edit().putString("favorites_list", gson.toJson(favorites)).apply()
-                        updateCategories()
+                        getSharedPreferences("mpd_player_prefs", Context.MODE_PRIVATE)
+                            .edit().putString("favorites_list", gson.toJson(favorites)).apply()
+                        
+                        mainHandler.post {
+                            val idx = displayedChannels.indexOfFirst { Channel.favoriteKey(it) == key }
+                            if (idx >= 0 && !isFinishing) {
+                                displayedChannels.removeAt(idx)
+                                channelAdapter.notifyItemRemoved(idx)
+                                if (displayedChannels.isEmpty()) {
+                                    updateCategories()
+                                }
+                            }
+                        }
                     }
                 }
+            }.setOnDismissListener {
+                mainHandler.postDelayed({
+                    if (isFinishing || rvChannels.childCount == 0) return@postDelayed
+                    
+                    if (focusedView != null && !focusedView!!.isFocused) {
+                        focusedView!!.requestFocus()
+                    } else if (!rvChannels.hasFocus()) {
+                        val savedPos = focusedView?.let { rvChannels.getChildAdapterPosition(it) } ?: -1
+                        
+                        if (savedPos in 0 until displayedChannels.size) {
+                            val vh = rvChannels.findViewHolderForAdapterPosition(savedPos)
+                            vh?.itemView?.requestFocus()
+                        } else if (displayedChannels.size > 0 && savedPos >= 0) {
+                            val target = minOf(maxOf(0, savedPos - 1), displayedChannels.size - 1)
+                            val vh = rvChannels.findViewHolderForAdapterPosition(target)
+                            if (!rvChannels.hasFocus()) vh?.itemView?.requestFocus()
+                        } else if (!rvChannels.hasFocus()) {
+                            for (i in 0 until rvChannels.childCount) {
+                                val vh = rvChannels.findViewHolderForAdapterPosition(i)
+                                if (vh != null && !rvChannels.hasFocus()) vh.itemView.requestFocus()
+                            }
+                        }
+                    }
+                }, 80)
             }.show()
     }
 
@@ -605,31 +717,37 @@ class MainActivity : AppCompatActivity() {
             favorites.add(newIndex, item)
             prefs.edit().putString("favorites_list", gson.toJson(favorites)).apply()
             
-            val currentCategoryName = categories[selectedCategoryIndex].name
-            categories.clear()
-            val favList = Channel.resolveFavorites(favorites, allChannels)
-            if (favList.isNotEmpty()) categories.add(CategoryInfo("FAVORITES", favList))
-            val grouped = allChannels.groupBy { it.group.ifBlank { "OTHERS" } }
-            for ((name, list) in grouped.toSortedMap()) {
-                if (name.uppercase() != "FAVORITES") categories.add(CategoryInfo(name.uppercase(), list))
-            }
+            // FIX: when inside FAVORITES view — DON'T call updateCategories or selectCategory,
+            // which would wipe displayedChannels and scroll back to 0. Only move in adapter.
+            val isInFavView = categories.getOrNull(selectedCategoryIndex)?.name == "FAVORITES"
             
-            val newIdx = categories.indexOfFirst { it.name == currentCategoryName }
-            if (newIdx != -1) {
-                selectedCategoryIndex = newIdx
-                displayedChannels.clear()
-                displayedChannels.addAll(categories[newIdx].channels)
-                channelAdapter.notifyDataSetChanged()
-                categoryAdapter.notifyDataSetChanged()
-            }
-            
-            mainHandler.postDelayed({
-                val pos = displayedChannels.indexOfFirst { Channel.favoriteKey(it) == key }
-                if (pos != -1) {
-                    val vh = rvChannels.findViewHolderForAdapterPosition(pos)
-                    vh?.itemView?.requestFocus()
+            if (!isInFavView) {
+                // Outside FAVORITES: only refresh that category's stored data, keep UI intact
+                val favList = Channel.resolveFavorites(favorites, allChannels)
+                val favIdx = categories.indexOfFirst { it.name == "FAVORITES" }
+                if (favIdx >= 0) {
+                    categories[favIdx] = CategoryInfo("FAVORITES", favList)
+                    mainHandler.post { categoryAdapter.notifyItemChanged(favIdx) }
                 }
-            }, 50)
+            } else {
+                // Inside FAVORITES: just reorder the adapter item — keep cursor alive
+                val pos = displayedChannels.indexOfFirst { Channel.favoriteKey(it) == key }
+                if (pos >= 0) {
+                    val targetPos = (pos + direction).coerceIn(0, displayedChannels.size - 1)
+                    if (pos != targetPos) {
+                        val item = displayedChannels.removeAt(pos)
+                        displayedChannels.add(targetPos, item)
+                        
+                        // Update the categories cache so it persists during the session
+                        val favIdx = categories.indexOfFirst { it.name == "FAVORITES" }
+                        if (favIdx >= 0) {
+                            categories[favIdx] = CategoryInfo("FAVORITES", ArrayList(displayedChannels))
+                        }
+
+                        channelAdapter.notifyItemMoved(pos, targetPos)
+                    }
+                }
+            }
         }
     }
 
