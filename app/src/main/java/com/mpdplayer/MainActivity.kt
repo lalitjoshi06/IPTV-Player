@@ -671,7 +671,19 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "Added to Favorites: ${channel.name}", Toast.LENGTH_SHORT).show()
         }
         prefs.edit().putString("favorites_list", gson.toJson(favorites)).apply()
+        
+        val savedChannelPos = rvChannels.focusedChild?.let { rvChannels.getChildAdapterPosition(it) } ?: -1
+        
         updateCategoriesSync()
+        
+        rvChannels.post {
+            val pos = if (savedChannelPos in 0 until displayedChannels.size) savedChannelPos else 0
+            if (pos > 0) rvChannels.scrollToPosition(pos)
+            rvChannels.post {
+                val vh = rvChannels.findViewHolderForAdapterPosition(pos)
+                vh?.itemView?.requestFocus()
+            }
+        }
     }
 
     override fun onPause() {
