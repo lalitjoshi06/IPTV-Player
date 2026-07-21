@@ -20,10 +20,10 @@ android {
     signingConfigs {
         create("release") {
             val props = Properties()
-            val propFile = rootProject.file("key.properties")
+            val propFile = project.file("key.properties")
             if (propFile.exists()) {
                 props.load(FileInputStream(propFile))
-                storeFile = rootProject.file(props.getProperty("storeFile"))
+                storeFile = project.file(props.getProperty("storeFile"))
                 storePassword = props.getProperty("storePassword")
                 keyAlias = props.getProperty("keyAlias")
                 keyPassword = props.getProperty("keyPassword")
@@ -35,7 +35,7 @@ android {
         release {
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            if (rootProject.file("key.properties").exists()) {
+            if (project.file("key.properties").exists()) {
                 signingConfig = signingConfigs.getByName("release")
             }
             // dex2oat hints: baseline-prof.txt at src/main/ is auto-packaged into the APK
@@ -65,3 +65,4 @@ dependencies {
     implementation("com.google.code.gson:gson:2.11.0")
     implementation("androidx.profileinstaller:profileinstaller:1.4.1")
 }
+

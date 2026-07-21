@@ -517,15 +517,17 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private var favoritesMigrated = false
     private fun migrateFavoritesIfNeeded() {
-        if (favoritesMigrated || allChannels.isEmpty()) return
-        favoritesMigrated = true
         val prefs = getSharedPreferences("mpd_player_prefs", Context.MODE_PRIVATE)
+        if (prefs.getBoolean("favorites_migrated", false) || allChannels.isEmpty()) return
         val raw: List<String> = try {
             gson.fromJson(prefs.getString("favorites_list", "[]"), object : TypeToken<List<String>>() {}.type)
-        } catch (e: Exception) { return }
-        if (raw.isEmpty()) return
+        } catch (e: Exception) {
+            prefs.edit().putBoolean("favorites_migrated", true).apply(); return
+        }
+        if (raw.isEmpty()) {
+            prefs.edit().putBoolean("favorites_migrated", true).apply(); return
+        }
 
         val index = mutableMapOf<String, Channel>()
         val snapshot = synchronized(allChannels) { allChannels.toList() }
@@ -552,6 +554,7 @@ class MainActivity : AppCompatActivity() {
         if (migrated != raw) {
             prefs.edit().putString("favorites_list", gson.toJson(migrated)).apply()
         }
+        prefs.edit().putBoolean("favorites_migrated", true).apply()
     }
 
     private var categorySelectionRunnable: Runnable? = null

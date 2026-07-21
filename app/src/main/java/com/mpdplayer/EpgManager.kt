@@ -58,14 +58,16 @@ object EpgManager {
     }
 
     private fun findInMap(dataMap: Map<String, EpgData>, lookupIds: List<String>, nameLower: String, cleanName: String): EpgData? {
-        // Try IDs first (most accurate)
         for (id in lookupIds) {
             dataMap[id]?.let { return it }
         }
-        // Try Names
         dataMap[nameLower]?.let { return it }
         if (cleanName.length > 2) {
             dataMap[cleanName]?.let { return it }
+        }
+        val normName = Channel.normalizedName(nameLower)
+        if (normName.isNotEmpty() && normName != nameLower && normName != cleanName) {
+            dataMap[normName]?.let { return it }
         }
         return null
     }

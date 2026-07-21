@@ -103,7 +103,7 @@ data class Channel(
                 if (result == null && ':' in key) {
                     val parts = key.split(':')
                     if (parts.size >= 4 && parts[0] == "tk") {
-                        result = index[parts[1]] ?: index[key] // Fallback to full key if parts fail
+                        result = index[parts[1]] ?: index[parts[3]] ?: index[key]
                     } else if (parts.size >= 2 && parts[0] == "nk") {
                         val content = key.substringAfter(':')
                         result = index[content] ?: index[key]
@@ -119,7 +119,7 @@ data class Channel(
                     it.tvgId.equals(key.trim(), ignoreCase = true)
                         || normalizedName(it.name) == normalizedName(key)
                 }
-            }.distinctBy { it.name }
+            }.distinct()
         }
     }
 }
