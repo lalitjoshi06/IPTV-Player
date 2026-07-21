@@ -226,7 +226,16 @@ class MainActivity : AppCompatActivity() {
     private fun onEpgPartLoaded(pending: java.util.concurrent.atomic.AtomicInteger) {
         if (pending.decrementAndGet() == 0) {
             mainHandler.post { 
-                if (!isFinishing) channelAdapter.notifyDataSetChanged() 
+                if (!isFinishing) {
+                    val focusedPos = rvChannels.focusedChild?.let { rvChannels.getChildAdapterPosition(it) } ?: -1
+                    channelAdapter.notifyDataSetChanged()
+                    if (focusedPos in 0 until displayedChannels.size) {
+                        rvChannels.post {
+                            val vh = rvChannels.findViewHolderForAdapterPosition(focusedPos)
+                            vh?.itemView?.requestFocus()
+                        }
+                    }
+                }
             }
         }
     }
