@@ -21,12 +21,14 @@ import android.text.InputType
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.media3.common.util.UnstableApi
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import java.io.File
 
+@UnstableApi
 class SettingsActivity : AppCompatActivity() {
 
     private lateinit var rvPlaylists: RecyclerView

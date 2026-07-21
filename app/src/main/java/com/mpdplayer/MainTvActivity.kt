@@ -5,7 +5,9 @@ import android.os.Bundle
 import android.view.KeyEvent
 import android.widget.Toast
 import androidx.fragment.app.FragmentActivity
+import androidx.media3.common.util.UnstableApi
 
+@UnstableApi
 class MainTvActivity : FragmentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {

@@ -1,5 +1,7 @@
 package com.mpdplayer
 
+import java.util.HashMap
+
 data class StreamSource(
     val url: String,
     val licenseUrl: String = "",
@@ -100,8 +102,12 @@ data class Channel(
                 var result: Channel? = index[key]
                 if (result == null && ':' in key) {
                     val parts = key.split(':')
-                    if (parts.size >= 4 && parts[0] == "tk") result = index[parts[1]] ?: index[parts[3]]
-                    else if (parts.size >= 2 && parts[0] == "nk") result = index[parts.subList(1, parts.size).joinToString(":")]
+                    if (parts.size >= 4 && parts[0] == "tk") {
+                        result = index[parts[1]] ?: index[key] // Fallback to full key if parts fail
+                    } else if (parts.size >= 2 && parts[0] == "nk") {
+                        val content = key.substringAfter(':')
+                        result = index[content] ?: index[key]
+                    }
                 }
                 
                 if (result == null) {
@@ -111,7 +117,7 @@ data class Channel(
 
                 result ?: allChannels.find { 
                     it.tvgId.equals(key.trim(), ignoreCase = true)
-                        || normalizedName(it.name) == key.replace(Regex("[^a-z0-9]"), "")
+                        || normalizedName(it.name) == normalizedName(key)
                 }
             }.distinctBy { it.name }
         }

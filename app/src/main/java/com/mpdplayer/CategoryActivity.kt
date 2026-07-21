@@ -135,11 +135,13 @@ class CategoryActivity : AppCompatActivity() {
         
         adapter.notifyItemMoved(fromIndex, toIndex)
         
-        // Re-open the dialog at the NEW position to allow continuous moving
         channelList.post {
-            val viewHolder = channelList.findViewHolderForAdapterPosition(toIndex)
-            viewHolder?.itemView?.requestFocus()
-            showFavoriteOptions(item, toIndex)
+            channelList.scrollToPosition(toIndex)
+            channelList.post {
+                val viewHolder = channelList.findViewHolderForAdapterPosition(toIndex)
+                viewHolder?.itemView?.requestFocus()
+                showFavoriteOptions(item, toIndex)
+            }
         }
     }
 

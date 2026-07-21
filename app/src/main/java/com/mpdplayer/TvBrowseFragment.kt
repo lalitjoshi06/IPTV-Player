@@ -23,6 +23,7 @@ import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import java.util.concurrent.atomic.AtomicInteger
 
+@androidx.media3.common.util.UnstableApi
 class TvBrowseFragment : BrowseSupportFragment() {
 
     private val allChannels = mutableListOf<Channel>()

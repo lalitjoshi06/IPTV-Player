@@ -23,6 +23,7 @@ import com.google.gson.reflect.TypeToken
 import androidx.media3.common.util.UnstableApi
 import java.util.concurrent.atomic.AtomicInteger
 
+@UnstableApi
 class MainActivity : AppCompatActivity() {
 
     companion object {
@@ -634,12 +635,21 @@ class MainActivity : AppCompatActivity() {
         val newFavOrder = displayedChannels.map { Channel.favoriteKey(it) }
         val prefs = getSharedPreferences("mpd_player_prefs", Context.MODE_PRIVATE)
         prefs.edit().putString("favorites_list", gson.toJson(newFavOrder)).apply()
+        
+        val favIdx = categories.indexOfFirst { it.name == "FAVORITES" }
+        if (favIdx >= 0) {
+            categories[favIdx] = CategoryInfo("FAVORITES", displayedChannels.toList())
+        }
+        
         channelAdapter.notifyItemMoved(fromIndex, toIndex)
-        updateCategoriesSync()
+        
         rvChannels.post {
-            val vh = rvChannels.findViewHolderForAdapterPosition(toIndex)
-            vh?.itemView?.requestFocus()
-            showFavoriteOptions(item, toIndex)
+            rvChannels.scrollToPosition(toIndex)
+            rvChannels.post {
+                val vh = rvChannels.findViewHolderForAdapterPosition(toIndex)
+                vh?.itemView?.requestFocus()
+                showFavoriteOptions(item, toIndex)
+            }
         }
     }
 
