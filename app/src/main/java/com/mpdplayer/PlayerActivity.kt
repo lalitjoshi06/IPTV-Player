@@ -37,6 +37,8 @@ import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
 import androidx.media3.ui.PlayerView
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import com.bumptech.glide.Glide
+import com.bumptech.glide.request.RequestOptions
 import com.google.gson.reflect.TypeToken
 import okhttp3.OkHttpClient
 import org.json.JSONArray
@@ -61,6 +63,7 @@ class PlayerActivity : AppCompatActivity() {
     private lateinit var infoClock: TextView
     private lateinit var playerTopClock: TextView
     private lateinit var infoBtnFav: ImageView
+    private lateinit var infoChannelLogo: ImageView
     private lateinit var btnSource: Button
     private lateinit var btnChannels: Button
     private lateinit var btnMediaSettings: ImageView
@@ -192,6 +195,7 @@ class PlayerActivity : AppCompatActivity() {
         infoClock = findViewById(R.id.infoClock)
         playerTopClock = findViewById(R.id.playerTopClock)
         infoBtnFav = findViewById(R.id.infoBtnFav)
+        infoChannelLogo = findViewById(R.id.infoChannelLogo)
         btnSource = findViewById(R.id.btnSource)
         btnChannels = findViewById(R.id.btnChannels)
         btnMediaSettings = findViewById(R.id.btnMediaSettings)
@@ -811,6 +815,17 @@ class PlayerActivity : AppCompatActivity() {
     private fun updateInfoBarUI() {
         infoChannelName.text = currentName
         infoChannelNumber.text = (currentIndex + 1).toString()
+        
+        val logoUrl = currentChannel?.logoUrl ?: ""
+        if (logoUrl.isNotBlank()) {
+            infoChannelLogo.visibility = View.VISIBLE
+            Glide.with(this)
+                .load(logoUrl)
+                .apply(RequestOptions().error(R.drawable.ic_iptv).centerInside())
+                .into(infoChannelLogo)
+        } else {
+            infoChannelLogo.visibility = View.GONE
+        }
         
         val channel = currentChannel
         val playlistName = if (channel != null && currentSourceIndex < channel.sources.size) {
