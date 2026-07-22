@@ -21,6 +21,7 @@ import androidx.recyclerview.widget.RecyclerView
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import androidx.media3.common.util.UnstableApi
+import java.security.MessageDigest
 import java.util.concurrent.atomic.AtomicInteger
 
 @UnstableApi
@@ -63,6 +64,51 @@ class MainActivity : AppCompatActivity() {
     private var lastSelectedCategoryName: String? = null
     private val mainPrefs by lazy { getSharedPreferences("mpd_player_prefs", Context.MODE_PRIVATE) }
     private val mainHandler = Handler(Looper.getMainLooper())
+    private var hourlyRefreshRunnable: Runnable? = null
+    private var lastChannelFingerprint: String? = null
+
+    private fun channelsFingerprint(channels: List<Channel>): String {
+        val digest = MessageDigest.getInstance("MD5")
+        channels.forEach { ch ->
+            digest.update(Channel.favoriteKey(ch).toByteArray())
+            ch.sources.sortedBy { it.url }.forEach { src ->
+                digest.update(src.url.toByteArray())
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xFF) }
+    }
+
+    private fun saveChannelFocus(): Int {
+        return rvChannels.focusedChild?.let { rvChannels.getChildAdapterPosition(it) } ?: -1
+    }
+
+    private fun restoreChannelFocus(pos: Int) {
+        if (pos in 0 until displayedChannels.size) {
+            rvChannels.post {
+                rvChannels.scrollToPosition(pos)
+                rvChannels.post {
+                    val vh = rvChannels.findViewHolderForAdapterPosition(pos)
+                    vh?.itemView?.requestFocus()
+                }
+            }
+        }
+    }
+
+    private fun startHourlyRefresh() {
+        stopHourlyRefresh()
+        hourlyRefreshRunnable = Runnable {
+            if (!isFinishing) {
+                loadAllPlaylists(silent = true, refreshEpg = true)
+                mainHandler.postDelayed(hourlyRefreshRunnable!!, 60 * 60 * 1000L)
+            }
+        }
+        mainHandler.postDelayed(hourlyRefreshRunnable!!, 60 * 60 * 1000L)
+    }
+
+    private fun stopHourlyRefresh() {
+        hourlyRefreshRunnable?.let { mainHandler.removeCallbacks(it) }
+        hourlyRefreshRunnable = null
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -113,6 +159,7 @@ class MainActivity : AppCompatActivity() {
                     
                     mainHandler.post {
                         synchronized(allChannels) { allChannels.clear(); allChannels.addAll(filteredChannels) }
+                        lastChannelFingerprint = channelsFingerprint(allChannels)
                         EpgManager.setPlaylistEpgMap(epgMap)
                         epgUrls.clear()
                         activeNames.forEach { name -> epgMap[name]?.let { epgUrls.addAll(it) } }
@@ -120,11 +167,13 @@ class MainActivity : AppCompatActivity() {
                         refreshEpg()
                         loadingBar.visibility = View.GONE
                         loadAllPlaylists(silent = true, refreshEpg = false)
+                        startHourlyRefresh()
                     }
                 } else {
                     mainHandler.post {
                         loadingBar.visibility = View.GONE
                         loadAllPlaylists(silent = false, refreshEpg = true)
+                        startHourlyRefresh()
                     }
                 }
             } catch (e: Exception) {
@@ -207,6 +256,7 @@ class MainActivity : AppCompatActivity() {
             ?: if (categories.isNotEmpty() && selectedCategoryIndex < categories.size) categories[selectedCategoryIndex].name else ""
         val newIdx = if (currentName.isNotEmpty()) categories.indexOfFirst { it.name == currentName } else 0
         selectCategory(if (newIdx != -1) newIdx else 0)
+        restoreChannelFocus(saveChannelFocus())
     }
 
     private fun refreshEpg() {
@@ -272,6 +322,7 @@ class MainActivity : AppCompatActivity() {
 
             mainHandler.post {
                 if (isFinishing) return@post
+                val savedPos = saveChannelFocus()
                 emptyState.visibility = View.GONE
                 val currentName = lastSelectedCategoryName
                     ?: if (categories.isNotEmpty() && selectedCategoryIndex < categories.size) categories[selectedCategoryIndex].name else ""
@@ -283,6 +334,7 @@ class MainActivity : AppCompatActivity() {
                 
                 val newIdx = if (currentName.isNotEmpty()) categories.indexOfFirst { it.name == currentName } else 0
                 selectCategory(if (newIdx != -1) newIdx else 0)
+                restoreChannelFocus(savedPos)
             }
         }.start()
     }
@@ -356,6 +408,8 @@ class MainActivity : AppCompatActivity() {
         val playlist = playlists.find { it.name == playlistName && it.isActive } ?: return
 
         loadingBar.visibility = View.VISIBLE
+        val m3uCache = java.io.File(cacheDir, "m3u_cache")
+        if (m3uCache.exists()) m3uCache.listFiles()?.forEach { it.delete() }
         PlaylistParser.parse(this, playlist.url, playlist.name, { result ->
             synchronized(allChannels) {
                 allChannels.removeAll { ch ->
@@ -373,10 +427,13 @@ class MainActivity : AppCompatActivity() {
             }
             mainHandler.post {
                 if (isFinishing) return@post
+                val savedPos = saveChannelFocus()
                 loadingBar.visibility = View.GONE
+                lastChannelFingerprint = channelsFingerprint(allChannels)
                 updateCategories()
                 saveToCache()
                 refreshEpg()
+                restoreChannelFocus(savedPos)
                 Toast.makeText(this@MainActivity, "Reloaded: $playlistName", Toast.LENGTH_SHORT).show()
             }
         }, { err ->
@@ -400,6 +457,8 @@ class MainActivity : AppCompatActivity() {
         val forceRefresh = prefs.getBoolean("force_refresh", false)
         val reloadSet = prefs.getStringSet("reload_playlists", emptySet()) ?: emptySet()
 
+        val savedPos = saveChannelFocus()
+        
         if (forceRefresh) {
             prefs.edit().remove("force_refresh").apply()
             synchronized(allChannels) { allChannels.clear() }
@@ -413,10 +472,9 @@ class MainActivity : AppCompatActivity() {
         } else {
             if (allChannels.isEmpty()) loadFromCacheSync() else applyActiveFilter()
         }
-
-        if (displayedChannels.isNotEmpty()) {
-            rvChannels.requestFocus()
-        }
+        
+        restoreChannelFocus(savedPos)
+        startHourlyRefresh()
     }
 
     private fun loadAllPlaylists(silent: Boolean = false, refreshEpg: Boolean = true) {
@@ -435,7 +493,11 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        if (!silent) loadingBar.visibility = View.VISIBLE
+        if (!silent) {
+            loadingBar.visibility = View.VISIBLE
+            val m3uCache = java.io.File(cacheDir, "m3u_cache")
+            if (m3uCache.exists()) m3uCache.listFiles()?.forEach { it.delete() }
+        }
 
         val tempChannels = mutableListOf<Channel>()
         val tempEpgUrls = mutableSetOf<String>()
@@ -453,19 +515,31 @@ class MainActivity : AppCompatActivity() {
                 finalChannels.addAll(tempChannels)
                 mergeIntoList(finalChannels, failedCache)
                 
+                val sortedChannels = finalChannels.sortedBy { Channel.favoriteKey(it) }
+                val newFingerprint = channelsFingerprint(sortedChannels)
+                val changed = newFingerprint != lastChannelFingerprint
+                
                 mainHandler.post {
                     if (isFinishing) return@post
+                    val savedPos = saveChannelFocus()
+                    
                     synchronized(allChannels) {
                         allChannels.clear()
                         allChannels.addAll(finalChannels)
                     }
+                    lastChannelFingerprint = newFingerprint
                     epgUrls.clear()
                     epgUrls.addAll(tempEpgUrls)
                     failedPlaylists.forEach { name -> EpgManager.getPlaylistEpgMap()[name]?.let { epgUrls.addAll(it) } }
                     loadingBar.visibility = View.GONE
-                    updateCategories()
-                    saveToCache()
+                    
+                    if (changed) {
+                        updateCategories()
+                        saveToCache()
+                    }
                     if (refreshEpg) refreshEpg()
+                    
+                    restoreChannelFocus(savedPos)
                 }
             }.start()
         }
@@ -701,6 +775,7 @@ class MainActivity : AppCompatActivity() {
     override fun onPause() {
         super.onPause()
         categorySelectionRunnable?.let { mainHandler.removeCallbacks(it) }
+        stopHourlyRefresh()
     }
 
     override fun onLowMemory() {

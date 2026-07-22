@@ -31,6 +31,7 @@
         <activity
             android:name=".SetupActivity"
             android:exported="true"
+            android:screenOrientation="landscape"
             android:theme="@style/Theme.MPDPlayer">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -42,22 +43,26 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:screenOrientation="landscape"
             android:launchMode="singleTop" />
 
         <activity
             android:name=".CategoryActivity"
             android:exported="false"
+            android:screenOrientation="landscape"
             android:theme="@style/Theme.MPDPlayer" />
 
         <activity
             android:name=".SettingsActivity"
             android:exported="false"
+            android:screenOrientation="landscape"
             android:theme="@style/Theme.MPDPlayer" />
 
         <!-- Player (shared) -->
         <activity
             android:name=".PlayerActivity"
             android:exported="true"
+            android:screenOrientation="landscape"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
             android:launchMode="singleTask" />
 
