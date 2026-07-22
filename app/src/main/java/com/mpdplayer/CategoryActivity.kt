@@ -15,6 +15,9 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import androidx.media3.common.util.UnstableApi
+import com.bumptech.glide.Glide
+import com.bumptech.glide.load.resource.bitmap.RoundedCorners
+import com.bumptech.glide.request.RequestOptions
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import java.util.Collections
@@ -172,6 +175,16 @@ class CategoryActivity : AppCompatActivity() {
             holder.number.text = ch.tvgId
             holder.btnFav.setImageResource(if (isFav) android.R.drawable.btn_star_big_on else android.R.drawable.btn_star_big_off)
             
+            if (ch.logoUrl.isNotBlank()) {
+                holder.logo.visibility = View.VISIBLE
+                Glide.with(holder.itemView.context)
+                    .load(ch.logoUrl)
+                    .apply(RequestOptions().error(R.drawable.ic_iptv).centerInside())
+                    .into(holder.logo)
+            } else {
+                holder.logo.visibility = View.GONE
+            }
+            
             // Show current program info
             val epg = EpgManager.getEpgForChannel(ch.tvgId, ch.name)
             val current = epg?.getCurrentProgram()
@@ -231,6 +244,7 @@ class CategoryActivity : AppCompatActivity() {
             val group: TextView = v.findViewById(R.id.channelGroup)
             val number: TextView = v.findViewById(R.id.channelNumber)
             val btnFav: ImageView = v.findViewById(R.id.btnFavorite)
+            val logo: ImageView = v.findViewById(R.id.channelLogo)
             val sourceName: TextView = v.findViewById(R.id.channelSourceName)
             val epgInfo: TextView = v.findViewById(R.id.currentProgramInfo)
         }

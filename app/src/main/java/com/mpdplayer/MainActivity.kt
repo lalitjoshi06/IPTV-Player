@@ -18,6 +18,8 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import com.bumptech.glide.Glide
+import com.bumptech.glide.request.RequestOptions
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import androidx.media3.common.util.UnstableApi
@@ -858,6 +860,16 @@ class MainActivity : AppCompatActivity() {
             val ch = displayedChannels[position]
             holder.name.text = ch.name
             
+            if (ch.logoUrl.isNotBlank()) {
+                holder.logo.visibility = View.VISIBLE
+                Glide.with(holder.itemView.context)
+                    .load(ch.logoUrl)
+                    .apply(RequestOptions().error(R.drawable.ic_iptv).centerInside())
+                    .into(holder.logo)
+            } else {
+                holder.logo.visibility = View.GONE
+            }
+            
             val playlistName = if (ch.sources.isNotEmpty()) ch.sources[0].playlistName else null
             val epg = EpgManager.getEpgForChannel(ch, playlistName)
 
@@ -904,6 +916,7 @@ class MainActivity : AppCompatActivity() {
         override fun getItemCount() = displayedChannels.size
         inner class ViewHolder(v: View) : RecyclerView.ViewHolder(v) {
             val name: TextView = v.findViewById(R.id.channelName)
+            val logo: ImageView = v.findViewById(R.id.channelLogo)
             val epg: TextView = v.findViewById(R.id.currentProgramInfo)
             init { v.isFocusable = true; v.isFocusableInTouchMode = true }
         }
