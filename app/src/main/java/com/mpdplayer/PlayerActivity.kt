@@ -136,7 +136,7 @@ class PlayerActivity : AppCompatActivity() {
             }
 
             // Force headers for Akamai/TataPlay segments (if not in playlist)
-            if (url.contains("akamaized.net") || url.contains("bpaicatchup") || url.contains("tataplay") || url.contains("workers.dev")) {
+            if (url.contains("akamaized.net") || url.contains("bpaicatchup") || url.contains("tataplay")) {
                 if (!currentRequestHeaders.containsKey("Origin")) builder.header("Origin", "https://watch.tataplay.com")
                 if (!currentRequestHeaders.containsKey("Referer")) builder.header("Referer", "https://watch.tataplay.com/")
             }
