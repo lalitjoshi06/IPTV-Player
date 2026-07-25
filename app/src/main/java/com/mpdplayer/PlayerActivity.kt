@@ -139,8 +139,8 @@ class PlayerActivity : AppCompatActivity() {
             }
             response
         }
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(10, TimeUnit.SECONDS)
         .build()
 
     private val dataSourceFactory = OkHttpDataSource.Factory(httpClient)
@@ -398,8 +398,6 @@ class PlayerActivity : AppCompatActivity() {
         // focus and the DRM provider on every switch. The DRM provider is
         // stateless and reads its config from the media item being played.
         ensurePlayer()
-        player?.stop()
-        
         val mediaItemBuilder = MediaItem.Builder()
             .setUri(currentMpdUrl)
             .setMediaMetadata(androidx.media3.common.MediaMetadata.Builder().setTitle(currentName).build())
@@ -427,7 +425,7 @@ class PlayerActivity : AppCompatActivity() {
 
         if (startPos > 0) player?.seekTo(startPos)
         player?.prepare()
-        player?.play()
+        player?.playWhenReady = true
         updateInfoBarUI()
     }
 
@@ -515,10 +513,10 @@ class PlayerActivity : AppCompatActivity() {
         // rebuffer resilience for staying alive.
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
-                10000,  // min buffer
+                5000,   // min buffer (reduced from 10s for faster start)
                 25000,  // max buffer (Cap native memory)
-                1500,   // buffer for playback (Increased for stability)
-                3000    // buffer for rebuffering (Increased for stability)
+                800,    // buffer for playback (reduced from 1500ms for faster start)
+                2000    // buffer for rebuffering (reduced from 3000ms)
             )
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()
