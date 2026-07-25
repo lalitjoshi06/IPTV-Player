@@ -122,25 +122,6 @@ class PlayerActivity : AppCompatActivity() {
             currentRequestHeaders.forEach { (k, v) ->
                 builder.header(k, v)
             }
-            
-            // JioTV Heuristics: Only apply if not provided in playlist
-            if (url.contains("jiotv") || url.contains("jio.com")) {
-                if (!currentRequestHeaders.containsKey("Origin")) builder.header("Origin", "https://www.jiotv.com")
-                if (!currentRequestHeaders.containsKey("Referer")) builder.header("Referer", "https://www.jiotv.com/")
-                // Jio HLS often requires a specific Mobile User-Agent
-                val currentUA = currentRequestHeaders["User-Agent"] ?: ""
-                if (currentUA.contains("Windows") || currentUA.isEmpty()) {
-                    builder.header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Mobile Safari/537.36")
-                }
-                builder.header("X-Requested-With", "com.jio.jiotv")
-            }
-
-            // Force headers for Akamai/TataPlay segments (if not in playlist)
-            if (url.contains("akamaized.net") || url.contains("bpaicatchup") || url.contains("tataplay")) {
-                if (!currentRequestHeaders.containsKey("Origin")) builder.header("Origin", "https://watch.tataplay.com")
-                if (!currentRequestHeaders.containsKey("Referer")) builder.header("Referer", "https://watch.tataplay.com/")
-            }
-
             val finalRequest = builder.build()
             val response = chain.proceed(finalRequest)
             if (!response.isSuccessful) {
