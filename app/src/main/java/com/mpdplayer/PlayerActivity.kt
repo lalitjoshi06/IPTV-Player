@@ -782,6 +782,7 @@ class PlayerActivity : AppCompatActivity() {
     private fun showInfoBar() {
         bottomInfoBar.visibility = View.VISIBLE
         btnChannels.requestFocus()
+        updateInfoBarUI()
         mainHandler.removeCallbacks(hideInfoBarRunnable)
         mainHandler.postDelayed(hideInfoBarRunnable, 4000)
     }

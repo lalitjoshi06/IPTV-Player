@@ -101,6 +101,12 @@ object EpgManager {
         }
     }
 
+    fun hasData(): Boolean {
+        synchronized(epgSourceData) {
+            return epgSourceData.isNotEmpty()
+        }
+    }
+
     fun clearAll() {
         synchronized(epgSourceData) {
             epgSourceData.clear()

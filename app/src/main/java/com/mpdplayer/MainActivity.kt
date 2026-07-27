@@ -473,6 +473,7 @@ class MainActivity : AppCompatActivity() {
             reloadSet.forEach { name -> reloadSinglePlaylist(name) }
         } else {
             if (allChannels.isEmpty()) loadFromCacheSync() else applyActiveFilter()
+            if (epgUrls.isNotEmpty() && !EpgManager.hasData()) refreshEpg()
         }
         
         restoreChannelFocus(savedPos)
