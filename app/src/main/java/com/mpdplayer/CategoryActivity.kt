@@ -185,14 +185,19 @@ class CategoryActivity : AppCompatActivity() {
                 holder.logo.visibility = View.GONE
             }
             
-            // Show current program info
-            val epg = EpgManager.getEpgForChannel(ch.tvgId, ch.name)
+            val epg = EpgManager.getEpgForChannel(ch, ch.sources.firstOrNull()?.playlistName)
             val current = epg?.getCurrentProgram()
             if (current != null) {
                 holder.epgInfo.text = "LIVE: ${current.title}"
                 holder.epgInfo.visibility = View.VISIBLE
             } else {
-                holder.epgInfo.visibility = View.GONE
+                val upcoming = epg?.getNextUpcoming()
+                if (upcoming != null) {
+                    holder.epgInfo.text = "Up next: ${upcoming.title}"
+                    holder.epgInfo.visibility = View.VISIBLE
+                } else {
+                    holder.epgInfo.visibility = View.GONE
+                }
             }
 
             // Focus animation

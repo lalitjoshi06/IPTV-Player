@@ -873,13 +873,18 @@ class MainActivity : AppCompatActivity() {
             
             val playlistName = if (ch.sources.isNotEmpty()) ch.sources[0].playlistName else null
             val epg = EpgManager.getEpgForChannel(ch, playlistName)
-
             val current = epg?.getCurrentProgram()
             if (current != null) {
                 holder.epg.text = "LIVE: ${current.title}"
                 holder.epg.visibility = View.VISIBLE
             } else {
-                holder.epg.visibility = View.GONE
+                val upcoming = epg?.getNextUpcoming()
+                if (upcoming != null) {
+                    holder.epg.text = "Up next: ${upcoming.title}"
+                    holder.epg.visibility = View.VISIBLE
+                } else {
+                    holder.epg.visibility = View.GONE
+                }
             }
             
             holder.itemView.setOnClickListener {

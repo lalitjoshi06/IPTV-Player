@@ -782,6 +782,7 @@ class PlayerActivity : AppCompatActivity() {
     private fun showInfoBar() {
         bottomInfoBar.visibility = View.VISIBLE
         btnChannels.requestFocus()
+        if (!EpgManager.hasData()) loadAllEpgs()
         updateInfoBarUI()
         mainHandler.removeCallbacks(hideInfoBarRunnable)
         mainHandler.postDelayed(hideInfoBarRunnable, 4000)
@@ -815,7 +816,12 @@ class PlayerActivity : AppCompatActivity() {
         val epg = if (channel != null) EpgManager.getEpgForChannel(channel, playlistName) else null
         if (epg != null) {
             val current = epg.getCurrentProgram()
-            infoCurrentProgram.text = current?.title ?: "No Program Information"
+            if (current != null) {
+                infoCurrentProgram.text = "LIVE: ${current.title}"
+            } else {
+                val upcoming = epg.getNextUpcoming()
+                infoCurrentProgram.text = upcoming?.let { "Up next: ${it.title}" } ?: "No Program Information"
+            }
             infoNextProgram.text = epg.getNextProgram()?.let { "Next: ${it.title}" } ?: ""
         } else {
             infoCurrentProgram.text = "No EPG Data Found"
@@ -1193,8 +1199,6 @@ class PlayerActivity : AppCompatActivity() {
 
     override fun onLowMemory() {
         super.onLowMemory()
-        Log.w("PlayerActivity", "Low memory detected! Clearing EPG data.")
-        EpgManager.clearAll()
     }
 
     override fun onDestroy() {

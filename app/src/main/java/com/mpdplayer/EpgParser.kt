@@ -274,9 +274,15 @@ object EpgParser {
                 if (clean.isNotEmpty()) {
                     if (result[clean] == null) result[clean] = data
                     
+                    // Normalized version (e.g., "abchd" from "ABC HD")
+                    val normName = normalize(clean)
+                    if (normName.isNotEmpty() && normName != clean && result[normName] == null) {
+                        result[normName] = data
+                    }
+                    
                     // Fuzzy match (ignore HD/SD and special chars)
-                    val fuzzy = normalize(clean).replace("hd", "").replace("sd", "").replace("india", "")
-                    if (fuzzy.isNotEmpty() && fuzzy.length > 2 && result[fuzzy] == null) {
+                    val fuzzy = normName.replace("hd", "").replace("sd", "").replace("india", "")
+                    if (fuzzy.isNotEmpty() && fuzzy.length > 2 && fuzzy != normName && result[fuzzy] == null) {
                         result[fuzzy] = data
                     }
                 }

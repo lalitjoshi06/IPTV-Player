@@ -22,4 +22,9 @@ data class EpgData(
         val idx = programs.indexOfFirst { now in it.start until it.stop }
         return if (idx >= 0 && idx + 1 < programs.size) programs[idx + 1] else null
     }
+
+    fun getNextUpcoming(): EpgProgram? {
+        val now = System.currentTimeMillis() / 1000
+        return programs.find { it.start > now }
+    }
 }

@@ -29,27 +29,24 @@ object EpgManager {
     }
 
     fun getEpgForChannel(channel: Channel, preferredPlaylistName: String? = null): EpgData? {
-        val lookupIds = channel.getAllLookupIds()
         val nameLower = channel.name.lowercase().trim()
         val cleanName = nameLower.replace("hd", "").replace("sd", "").replace("india", "").trim()
+        val normName = Channel.normalizedName(nameLower)
         
         synchronized(epgSourceData) {
-            // 1. Determine preferred EPG URLs for this playlist
             val preferredUrls = if (preferredPlaylistName != null) {
                 playlistToEpgUrls[preferredPlaylistName] ?: emptySet()
             } else emptySet()
 
-            // 2. Try lookup in preferred EPG sources first
             preferredUrls.forEach { url ->
                 epgSourceData[url]?.let { dataMap ->
-                    findInMap(dataMap, lookupIds, nameLower, cleanName)?.let { return it }
+                    findInMap(dataMap, nameLower, cleanName, normName)?.let { return it }
                 }
             }
 
-            // 3. Fallback: Search all other EPG sources
             epgSourceData.forEach { (url, dataMap) ->
                 if (url !in preferredUrls) {
-                    findInMap(dataMap, lookupIds, nameLower, cleanName)?.let { return it }
+                    findInMap(dataMap, nameLower, cleanName, normName)?.let { return it }
                 }
             }
             
@@ -57,15 +54,11 @@ object EpgManager {
         }
     }
 
-    private fun findInMap(dataMap: Map<String, EpgData>, lookupIds: List<String>, nameLower: String, cleanName: String): EpgData? {
-        for (id in lookupIds) {
-            dataMap[id]?.let { return it }
-        }
+    private fun findInMap(dataMap: Map<String, EpgData>, nameLower: String, cleanName: String, normName: String): EpgData? {
         dataMap[nameLower]?.let { return it }
         if (cleanName.length > 2) {
             dataMap[cleanName]?.let { return it }
         }
-        val normName = Channel.normalizedName(nameLower)
         if (normName.isNotEmpty() && normName != nameLower && normName != cleanName) {
             dataMap[normName]?.let { return it }
         }
