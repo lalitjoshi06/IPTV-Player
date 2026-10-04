@@ -29,6 +29,7 @@ import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.trackselection.AdaptiveTrackSelection
@@ -511,6 +512,9 @@ class PlayerActivity : AppCompatActivity() {
         // retain more native codec/segment buffers, growing native heap and triggering
         // an OOM kill (app dies, returns to home). Smaller buffers trade a little
         // rebuffer resilience for staying alive.
+        val renderersFactory = DefaultRenderersFactory(this)
+            .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
+        
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
                 5000,   // min buffer (reduced from 10s for faster start)
@@ -534,7 +538,7 @@ class PlayerActivity : AppCompatActivity() {
             .setAllowVideoNonSeamlessAdaptiveness(true)
             .build()
 
-        player = ExoPlayer.Builder(this)
+        player = ExoPlayer.Builder(this, renderersFactory)
             .setTrackSelector(trackSelector)
             .setBandwidthMeter(bandwidthMeter)
             .setMediaSourceFactory(

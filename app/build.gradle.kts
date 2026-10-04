@@ -49,20 +49,21 @@ android {
 }
 
 dependencies {
-    implementation("androidx.core:core-ktx:1.15.0")
-    implementation("androidx.appcompat:appcompat:1.7.1")
+    implementation("androidx.core:core-ktx:1.19.1")
+    implementation("androidx.appcompat:appcompat:1.8.0")
     implementation("androidx.recyclerview:recyclerview:1.4.0")
     implementation("androidx.cardview:cardview:1.0.0")
-    implementation("androidx.media3:media3-exoplayer:1.11.0")
-    implementation("androidx.media3:media3-exoplayer-dash:1.11.0")
-    implementation("androidx.media3:media3-exoplayer-hls:1.11.0")
-    implementation("androidx.media3:media3-ui:1.11.0")
-    implementation("androidx.media3:media3-datasource-okhttp:1.11.0")
+    implementation("androidx.media3:media3-exoplayer:1.11.1")
+    implementation("androidx.media3:media3-exoplayer-dash:1.11.1")
+    implementation("androidx.media3:media3-exoplayer-hls:1.11.1")
+    implementation("org.jellyfin.media3:media3-ffmpeg-decoder:1.9.0+1")
+    implementation("androidx.media3:media3-ui:1.11.1")
+    implementation("androidx.media3:media3-datasource-okhttp:1.11.1")
     implementation("androidx.leanback:leanback:1.2.0")
     implementation("androidx.leanback:leanback-preference:1.2.0")
     implementation("com.github.bumptech.glide:glide:5.0.9")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    implementation("com.google.code.gson:gson:2.11.0")
+    implementation("com.google.code.gson:gson:2.14.0")
     implementation("androidx.profileinstaller:profileinstaller:1.4.1")
 }
 
